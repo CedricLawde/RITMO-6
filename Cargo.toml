@@ -1,0 +1,42 @@
+[package]
+name = "ritmo6"
+version = "1.0.0"
+edition = "2021"
+authors = ["Geranium"]
+license = "GPL-3.0"
+description = "Ritmo-6: six-voice analog-style drum machine (standalone + VST3)"
+
+[lib]
+name = "ritmo6_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ritmo6"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[features]
+default = ["standalone"]
+standalone = ["dep:eframe", "dep:cpal", "dep:midir"]
+
+[dependencies]
+egui = "0.31.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.15"
+eframe = { version = "0.31.1", optional = true, default-features = false, features = ["default_fonts", "glow"] }
+cpal = { version = "0.15", optional = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+midir = { version = "0.10", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = "0.30"
+
+[workspace]
+members = ["plugin"]
+default-members = [".", "plugin"]
+resolver = "2"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
