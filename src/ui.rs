@@ -2,14 +2,19 @@
 
 use crate::bank;
 use crate::params::{
-    apply_kit, internal_bpm, spec, sync_division, voice_spec, ParamAccess, ParamId, VoiceParam,
-    FILTER_HP_THRESHOLD, NUM_CH, NUM_KIT_CHOICES, NUM_STEPS, SYNC_NAMES, VOICE_LETTERS,
+    apply_kit, delay_division, delay_free_ms, fx_spec, internal_bpm, phaser_hz, spec, sync_division,
+    voice_spec, FxParam, ParamAccess, ParamId, VoiceParam, DELAY_DIVISIONS, DELAY_MODE_NAMES,
+    FILTER_HP_THRESHOLD, FX_BUS_NAMES, FX_BUS_SHORT, NUM_CH, NUM_FX_BUSES, NUM_KIT_CHOICES, NUM_STEPS,
+    SYNC_NAMES, VOICE_LETTERS,
 };
 use crate::state::SharedState;
 use egui::{pos2, vec2, Align2, Color32, FontId, Id, Pos2, Rect, Response, Sense, Shape, Stroke};
 use std::sync::atomic::Ordering::Relaxed;
 
-pub const W: f32 = 760.0;
+/// Design width: 760 + 80 for the NUDGE / DRIFT columns.
+pub const W: f32 = 840.0;
+/// The right-hand column (nameplate, MIDI, module slots) moved right by this much.
+const RIGHT_SHIFT: f32 = 80.0;
 pub const H: f32 = 490.0;
 
 const BG: Color32 = Color32::from_rgb(10, 10, 11);
@@ -34,6 +39,16 @@ pub struct UiState {
     message_time: f64,
     rng: u64,
     chassis: Option<egui::TextureHandle>,
+    pcb: Option<egui::TextureHandle>,
+    /// The FX panel is open (or opening). The flip itself is fx_p, 0 = front, 1 = FX side.
+    pub fx_open: bool,
+    /// Holds the flip at one point of its travel (for pictures of the animation).
+    pub fx_freeze: Option<f32>,
+    pub fx_p: f32,
+    last_time: f64,
+    last_step: i32,
+    step_time: f64,
+    kick_time: f64,
 }
 
 impl Default for UiState {
@@ -52,6 +67,14 @@ impl Default for UiState {
             message_time: -10.0,
             rng: seed | 1,
             chassis: None,
+            pcb: None,
+            fx_open: false,
+            fx_freeze: None,
+            fx_p: 0.0,
+            last_time: 0.0,
+            last_step: -1,
+            step_time: -10.0,
+            kick_time: -10.0,
         }
     }
 }
@@ -68,36 +91,96 @@ impl UiState {
     }
 }
 
-/// Maps design coordinates (760x490) to the screen.
+/// Maps design coordinates (840x490) to the screen. For the FX panel flip, the main plate
+/// can be tilted around a horizontal hinge and seen in perspective, and made inactive
+/// (live false) so nothing can be clicked while it moves.
 #[derive(Clone, Copy)]
 struct G {
     s: f32,
     o: Pos2,
+    /// cos and sin of the panel's tilt around the hinge (1, 0 when flat).
+    c: f32,
+    sn: f32,
+    live: bool,
 }
 
+/// The hinge of the fold-out panel: a horizontal line across the middle of the main plate.
+const HINGE_X: f32 = 348.0;
+const HINGE_Y: f32 = 251.0;
+/// Viewing distance for the perspective of the tilting panel, in design units.
+const EYE: f32 = 1600.0;
+
 impl G {
+    fn new(s: f32, o: Pos2) -> Self {
+        G { s, o, c: 1.0, sn: 0.0, live: true }
+    }
+    fn shifted(self, dx: f32) -> Self {
+        G { o: pos2(self.o.x + dx * self.s, self.o.y), ..self }
+    }
+    /// The same panel tilted around the hinge (inactive while it moves).
+    fn tilted(self, c: f32, sn: f32) -> Self {
+        G { c, sn, live: false, ..self }
+    }
+    /// A point of the panel, w design units behind its surface, seen in perspective.
+    fn p3(&self, x: f32, y: f32, w: f32) -> Pos2 {
+        let d = y - HINGE_Y;
+        let yy = d * self.c - w * self.sn;
+        let z = d * self.sn + w * self.c;
+        let k = EYE / (EYE - z);
+        pos2(self.o.x + (HINGE_X + (x - HINGE_X) * k) * self.s, self.o.y + (HINGE_Y + yy * k) * self.s)
+    }
     fn p(&self, x: f32, y: f32) -> Pos2 {
-        pos2(self.o.x + x * self.s, self.o.y + y * self.s)
+        if self.sn == 0.0 && self.c == 1.0 {
+            pos2(self.o.x + x * self.s, self.o.y + y * self.s)
+        } else {
+            self.p3(x, y, 0.0)
+        }
     }
     fn r(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
         Rect::from_min_max(self.p(x0, y0), self.p(x1, y1))
     }
     fn f(&self, size: f32) -> FontId {
-        FontId::proportional(size * self.s)
+        FontId::proportional((size * self.s * self.c.abs()).max(0.5))
     }
     fn l(&self, w: f32) -> f32 {
-        w * self.s
+        w * self.s * self.c.abs()
+    }
+    fn sense(&self, s: Sense) -> Sense {
+        if self.live {
+            s
+        } else {
+            Sense::hover()
+        }
     }
 }
 
 pub fn draw(ctx: &egui::Context, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState) {
     egui::CentralPanel::default()
         .frame(egui::Frame::default().fill(BG))
-        .show(ctx, |ui| {
+        .show(ctx, |ui| draw_in(ui, access, state, st));
+    ctx.request_repaint_after(std::time::Duration::from_millis(30));
+}
+
+/// The whole panel inside a given area, scaled to fit it (the plugin window uses this with
+/// its resize corner).
+pub fn draw_in(ui: &mut egui::Ui, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState) {
+    let ctx = ui.ctx().clone();
+    // A plugin window gets a fresh drawing context each time it is opened, while this state
+    // lives on: pictures loaded into the previous context don't exist in the new one (the case
+    // and the plate came out black). Load them again whenever the context is new.
+    let marker = Id::new("ritmo6-textures-loaded");
+    if !ctx.data(|d| d.get_temp::<bool>(marker).unwrap_or(false)) {
+        st.chassis = None;
+        st.pcb = None;
+        ctx.data_mut(|d| d.insert_temp(marker, true));
+    }
+    ui.painter().rect_filled(ui.max_rect(), 0.0, BG);
+    {
+        {
             let avail = ui.max_rect();
             let s = (avail.width() / W).min(avail.height() / H).max(0.2);
             let o = avail.center() - vec2(W * s / 2.0, H * s / 2.0);
-            let g = G { s, o };
+            let g = G::new(s, o);
             let now = ctx.input(|i| i.time);
             for ch in 0..NUM_CH {
                 let h = state.hits[ch].load(Relaxed);
@@ -106,12 +189,47 @@ pub fn draw(ctx: &egui::Context, access: &dyn ParamAccess, state: &SharedState, 
                     st.lamp_time[ch] = now;
                 }
             }
+            let cur = state.cur_step.load(Relaxed);
+            if cur != st.last_step {
+                st.last_step = cur;
+                st.step_time = now;
+            }
+            // the fold-out FX panel: fx_p runs 0 -> 1 in FLIP_SECS
+            let dt = (now - st.last_time).clamp(0.0, 0.1) as f32;
+            st.last_time = now;
+            match st.fx_freeze {
+                Some(f) => st.fx_p = f.clamp(0.0, 1.0),
+                None => {
+                    let step = dt / FLIP_SECS;
+                    st.fx_p = if st.fx_open { (st.fx_p + step).min(1.0) } else { (st.fx_p - step).max(0.0) };
+                }
+            }
             draw_case(ui, g, st);
-            draw_main(ui, g, access, state, st, now);
-            if let Some(ch) = st.open_module {
-                draw_module(ui, g, access, state, st, ch);
+            if st.fx_p <= 0.0 {
+                draw_main(ui, g, access, state, st, now);
+            } else if st.fx_p >= 1.0 {
+                draw_fx_panel(ui, g, access, state, st, now);
             } else {
-                draw_right(ui, g, access, state, st);
+                let th = flip_angle(st.fx_p, st.fx_open);
+                let (c, sn) = (th.cos(), th.sin());
+                let front = g.tilted(c, sn);
+                draw_cavity(ui, g, front, st, state, now);
+                if c >= 0.0 {
+                    plate_face(ui, front, st);
+                    draw_main(ui, front, access, state, st, now);
+                } else {
+                    // the back of the plate: its own upright coordinates, mirrored by the turn
+                    let back = g.tilted(-c, -sn);
+                    plate_face(ui, back, st);
+                    draw_fx_panel(ui, back, access, state, st, now);
+                }
+                ctx.request_repaint();
+            }
+            let rg = g.shifted(RIGHT_SHIFT);
+            if let Some(ch) = st.open_module {
+                draw_module(ui, rg, access, state, st, ch);
+            } else {
+                draw_right(ui, rg, access, state, st);
             }
             if now - st.message_time < 3.0 && !st.message.is_empty() {
                 ui.painter().text(
@@ -122,7 +240,8 @@ pub fn draw(ctx: &egui::Context, access: &dyn ParamAccess, state: &SharedState, 
                     Color32::from_rgb(255, 200, 120),
                 );
             }
-        });
+        }
+    }
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
 }
 
@@ -146,6 +265,37 @@ fn vgrad(ui: &egui::Ui, rect: Rect, top: Color32, bottom: Color32) {
     ui.painter().add(Shape::mesh(m));
 }
 
+impl G {
+    fn flat(&self) -> bool {
+        self.c == 1.0 && self.sn == 0.0
+    }
+}
+
+/// A filled box given in design coordinates: rounded when the plate is flat, its four
+/// corners in perspective while it turns.
+#[allow(clippy::too_many_arguments)]
+fn fill(ui: &egui::Ui, g: G, x0: f32, y0: f32, x1: f32, y1: f32, round: f32, color: Color32) {
+    if g.flat() {
+        ui.painter().rect_filled(g.r(x0, y0, x1, y1), g.l(round), color);
+    } else {
+        let pts = vec![g.p(x0, y0), g.p(x1, y0), g.p(x1, y1), g.p(x0, y1)];
+        ui.painter().add(Shape::convex_polygon(pts, color, Stroke::NONE));
+    }
+}
+
+/// A vertical gradient box given in design coordinates (follows the perspective).
+#[allow(clippy::too_many_arguments)]
+fn vgrad_d(ui: &egui::Ui, g: G, x0: f32, y0: f32, x1: f32, y1: f32, top: Color32, bottom: Color32) {
+    let mut m = egui::Mesh::default();
+    m.colored_vertex(g.p(x0, y0), top);
+    m.colored_vertex(g.p(x1, y0), top);
+    m.colored_vertex(g.p(x1, y1), bottom);
+    m.colored_vertex(g.p(x0, y1), bottom);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    ui.painter().add(Shape::mesh(m));
+}
+
 fn text(ui: &egui::Ui, g: G, x: f32, y: f32, t: &str, size: f32, color: Color32) {
     ui.painter().text(g.p(x, y), Align2::CENTER_CENTER, t, g.f(size), color);
 }
@@ -157,6 +307,8 @@ fn chassis_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     let img = image::load_from_memory(CHASSIS_PNG).ok()?.to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    // draw this frame for sure: the plugin window only uploads new pictures with a frame it shows
+    ctx.request_repaint();
     Some(ctx.load_texture("chassis", color, egui::TextureOptions::LINEAR))
 }
 
@@ -176,6 +328,295 @@ fn draw_case(ui: &egui::Ui, g: G, st: &mut UiState) {
     }
 }
 
+// ---------------------------------------------------------------- the fold-out FX panel
+
+/// How long the plate takes to turn over, in seconds.
+const FLIP_SECS: f32 = 0.65;
+/// The main plate (the part that turns over), in design coordinates.
+const PLATE: (f32, f32, f32, f32) = (34.0, 38.0, 662.0, 464.0);
+/// The inside of the case under the plate (tools/pcb.py, rendered with Blender at 2x).
+const PCB_PNG: &[u8] = include_bytes!("../assets/pcb.png");
+/// The red bead on the board, in plate coordinates.
+const PCB_LED: (f32, f32) = (594.0, 102.0);
+
+fn png_texture(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+    // draw this frame for sure: the plugin window only uploads new pictures with a frame it shows
+    ctx.request_repaint();
+    Some(ctx.load_texture(name, color, egui::TextureOptions::LINEAR))
+}
+
+/// The plate's angle around the hinge for a point of the travel: a slow start as the latch
+/// lets go, a quick swing, and a small settle as it lands on its stops.
+fn flip_angle(p: f32, opening: bool) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let q = if opening { p } else { 1.0 - p };
+    let e = if q < 0.5 { 4.0 * q * q * q } else { 1.0 - (-2.0 * q + 2.0).powi(3) / 2.0 };
+    let settle = if q > 0.82 {
+        let r = (q - 0.82) / 0.18;
+        0.06 * (r * TAU).sin() * (1.0 - r)
+    } else {
+        0.0
+    };
+    let a = PI * e + settle;
+    if opening {
+        a
+    } else {
+        PI - a
+    }
+}
+
+/// A part of a texture laid on the (possibly tilted) plate, in strips so the perspective holds.
+#[allow(clippy::too_many_arguments)]
+fn tex_on_plate(ui: &egui::Ui, g: G, tex: egui::TextureId, x0: f32, y0: f32, x1: f32, y1: f32, uv: Rect, tint: Color32) {
+    let mut m = egui::Mesh::with_texture(tex);
+    let n = 24u32;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let y = y0 + (y1 - y0) * t;
+        let v = uv.min.y + (uv.max.y - uv.min.y) * t;
+        m.vertices.push(egui::epaint::Vertex { pos: g.p(x0, y), uv: pos2(uv.min.x, v), color: tint });
+        m.vertices.push(egui::epaint::Vertex { pos: g.p(x1, y), uv: pos2(uv.max.x, v), color: tint });
+        if i > 0 {
+            let b = 2 * i;
+            m.add_triangle(b - 2, b - 1, b + 1);
+            m.add_triangle(b - 2, b + 1, b);
+        }
+    }
+    ui.painter().add(Shape::mesh(m));
+}
+
+/// What shows under the plate while it turns: the brown circuit board, its shadows and its
+/// LED beating with the steps.
+fn draw_cavity(ui: &egui::Ui, g: G, tilted: G, st: &mut UiState, state: &SharedState, now: f64) {
+    if st.pcb.is_none() {
+        st.pcb = png_texture(ui.ctx(), "pcb", PCB_PNG);
+    }
+    let (x0, y0, x1, y1) = PLATE;
+    let p = ui.painter();
+    let well = g.r(x0, y0, x1, y1);
+    p.rect_filled(well, 0.0, Color32::from_rgb(20, 14, 10));
+    if let Some(tex) = &st.pcb {
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        p.image(tex.id(), well, uv, Color32::WHITE);
+    }
+    // the case walls shade the board's edges
+    let dark = Color32::from_black_alpha(170);
+    let clear = Color32::from_black_alpha(0);
+    vgrad(ui, g.r(x0, y0, x1, y0 + 26.0), dark, clear);
+    vgrad(ui, g.r(x0, y1 - 18.0, x1, y1), clear, Color32::from_black_alpha(120));
+    // the LED: a flash on every step while it plays, a slow breath when stopped
+    let running = state.running.load(Relaxed) || state.host_driven.load(Relaxed);
+    let glow = if running {
+        (-(now - st.step_time) as f32 * 7.0).exp()
+    } else {
+        0.35 + 0.35 * ((now * 2.4).sin() as f32)
+    };
+    let led = g.p(PCB_LED.0, PCB_LED.1);
+    let a = (glow.clamp(0.0, 1.0) * 255.0) as u8;
+    p.circle_filled(led, g.l(12.0), Color32::from_rgba_unmultiplied(255, 40, 20, a / 5));
+    p.circle_filled(led, g.l(6.0), Color32::from_rgba_unmultiplied(255, 60, 30, a / 3));
+    p.circle_filled(led, g.l(3.2), Color32::from_rgba_unmultiplied(255, 120, 90, a));
+    // the turning plate's shadow on the board
+    let k = tilted.sn.abs();
+    let off = vec2(g.l(10.0) * k, g.l(16.0) * k);
+    let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+    let mut pts: Vec<Pos2> = corners.iter().map(|&(x, y)| tilted.p(x, y) + off).collect();
+    if tilted.c < 0.0 {
+        pts.reverse();
+    }
+    p.add(Shape::convex_polygon(pts, Color32::from_black_alpha((120.0 * k) as u8), Stroke::NONE));
+}
+
+/// The turning plate itself: its edges (it has a thickness), then its face, shaded by the
+/// angle, then the hinge pins.
+fn plate_face(ui: &egui::Ui, g: G, st: &UiState) {
+    let (x0, y0, x1, y1) = PLATE;
+    let p = ui.painter();
+    let t = 8.0;
+    let shade = 0.45 + 0.55 * g.c.abs();
+    let edge = Color32::from_rgb((70.0 * shade) as u8, (72.0 * shade) as u8, (76.0 * shade) as u8);
+    let quads = [
+        [g.p3(x0, y0, 0.0), g.p3(x1, y0, 0.0), g.p3(x1, y0, t), g.p3(x0, y0, t)],
+        [g.p3(x0, y1, 0.0), g.p3(x1, y1, 0.0), g.p3(x1, y1, t), g.p3(x0, y1, t)],
+        [g.p3(x0, y0, 0.0), g.p3(x0, y1, 0.0), g.p3(x0, y1, t), g.p3(x0, y0, t)],
+        [g.p3(x1, y0, 0.0), g.p3(x1, y1, 0.0), g.p3(x1, y1, t), g.p3(x1, y0, t)],
+    ];
+    for q in quads {
+        let mut m = egui::Mesh::default();
+        for v in q {
+            m.colored_vertex(v, edge);
+        }
+        m.add_triangle(0, 1, 2);
+        m.add_triangle(0, 2, 3);
+        p.add(Shape::mesh(m));
+    }
+    let v = (255.0 * shade) as u8;
+    let tint = Color32::from_rgb(v, v, v);
+    match &st.chassis {
+        Some(tex) => {
+            let uv = Rect::from_min_max(pos2(x0 / W, y0 / H), pos2(x1 / W, y1 / H));
+            tex_on_plate(ui, g, tex.id(), x0, y0, x1, y1, uv, tint);
+        }
+        None => {
+            let pts = vec![g.p(x0, y0), g.p(x1, y0), g.p(x1, y1), g.p(x0, y1)];
+            p.add(Shape::convex_polygon(pts, Color32::from_rgb(73, 74, 77), Stroke::NONE));
+        }
+    }
+    let rim = [g.p(x0, y0), g.p(x1, y0), g.p(x1, y1), g.p(x0, y1), g.p(x0, y0)];
+    p.add(Shape::line(rim.to_vec(), Stroke::new(g.s, Color32::from_rgb(20, 20, 22))));
+    // hinge pins at both ends of the turning axis
+    for x in [x0 - 3.0, x1 - 5.0] {
+        let r = Rect::from_min_max(g.p3(x, HINGE_Y, 0.0) - vec2(0.0, 4.0 * g.s), g.p3(x + 8.0, HINGE_Y, 0.0) + vec2(0.0, 4.0 * g.s));
+        vgrad(ui, r, Color32::from_rgb(220, 222, 226), Color32::from_rgb(90, 92, 96));
+    }
+}
+
+/// The FX button (bottom right of the plate), on both sides of it.
+fn fx_button(ui: &mut egui::Ui, g: G, st: &mut UiState) {
+    let r = g.r(604.0, 422.0, 650.0, 442.0);
+    let resp = ui.interact(r, Id::new("fx_button"), g.sense(Sense::click()));
+    fill(ui, g, 604.0, 424.0, 650.0, 444.0, 3.0, Color32::from_black_alpha(150));
+    fill(ui, g, 604.0, 422.0, 650.0, 442.0, 3.0, Color32::from_rgb(20, 20, 22));
+    let down = resp.is_pointer_button_down_on();
+    let (top, bot) = if down {
+        (Color32::from_rgb(170, 70, 30), Color32::from_rgb(200, 96, 44))
+    } else if resp.hovered() {
+        (Color32::from_rgb(250, 140, 70), Color32::from_rgb(200, 90, 40))
+    } else {
+        (Color32::from_rgb(232, 120, 56), Color32::from_rgb(180, 76, 30))
+    };
+    vgrad_d(ui, g, 607.0, 425.0, 647.0, 439.0, top, bot);
+    text(ui, g, 618.0, 411.0, "FX", 12.0, ORANGE_HI);
+    let lit = st.fx_open;
+    ui.painter().circle_filled(g.p(640.0, 411.0), g.l(3.0), if lit { RED_LED } else { Color32::from_rgb(70, 20, 18) });
+    let tip = if st.fx_open { "Close the FX panel" } else { "Open the FX panel: phaser, distortion, delay and spring reverb" };
+    if resp.on_hover_text(tip).clicked() {
+        st.fx_open = !st.fx_open;
+    }
+}
+
+/// The back of the plate: the four shared effects, each with its own knobs, a bypass
+/// footswitch and an output level. Voices reach them through their send knobs.
+fn draw_fx_panel(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState, now: f64) {
+    use FxParam::*;
+    let fx = ParamId::Fx;
+    const X: [f32; 4] = [46.0, 200.0, 354.0, 508.0];
+    const SW: f32 = 142.0;
+    let heads = [
+        (Color32::from_rgb(222, 112, 40), Color32::from_rgb(30, 20, 14)),
+        (Color32::from_rgb(28, 28, 30), Color32::from_rgb(236, 236, 236)),
+        (Color32::from_rgb(110, 150, 120), Color32::from_rgb(18, 28, 20)),
+        (Color32::from_rgb(86, 112, 150), Color32::from_rgb(236, 240, 246)),
+    ];
+    let titles = ["PHASER", "DISTORTION", "DELAY", "SPRING REVERB"];
+    let knobs: [&[FxParam]; 4] = [
+        &[PhRate, PhDepth, PhColor, PhMix, PhLevel],
+        &[DsDrive, DsFilter, DsFat, DsMix, DsLevel],
+        &[DlTime, DlFeedback, DlTone, DlAge, DlMod, DlMix, DlLevel],
+        &[SpDecay, SpDamping, SpTension, SpDrive, SpMix, SpLevel],
+    ];
+    let bypass = [PhBypass, DsBypass, DlBypass, SpBypass];
+    for k in 0..4 {
+        let x0 = X[k];
+        let x1 = x0 + SW;
+        let mid = x0 + SW / 2.0;
+        fill(ui, g, x0 - 1.0, 49.0, x1 + 1.0, 401.0, 7.0, Color32::from_rgb(12, 12, 13));
+        fill(ui, g, x0, 50.0, x1, 400.0, 6.0, Color32::from_rgb(34, 36, 39));
+        fill(ui, g, x0 + 5.0, 55.0, x1 - 5.0, 76.0, 3.0, heads[k].0);
+        text(ui, g, mid, 65.5, titles[k], 9.5, heads[k].1);
+        for (i, p) in knobs[k].iter().enumerate() {
+            let x = x0 + 24.0 + 47.0 * (i % 3) as f32;
+            let y = 102.0 + 48.0 * (i / 3) as f32;
+            knob(ui, g, access, fx(*p), x, y, 12.5);
+            text(ui, g, x, y + 20.0, fx_spec(*p).short, 6.5, INK);
+        }
+        // bypass footswitch with its LED (lit = the effect is in)
+        let on = access.get(fx(bypass[k])) < 0.5;
+        ui.painter().circle_filled(g.p(mid, 333.0), g.l(3.5), if on { RED_LED } else { Color32::from_rgb(70, 20, 18) });
+        if on {
+            ui.painter().circle_filled(g.p(mid, 333.0), g.l(7.0), RED_LED.gamma_multiply(0.2));
+        }
+        if round_button(ui, g, Id::new(("fx_bypass", k)), mid, 360.0, 13.0, None)
+            .on_hover_text(format!("{}: {}", FX_BUS_NAMES[k], if on { "on (click to bypass)" } else { "bypassed (click to switch on)" }))
+            .clicked()
+        {
+            access.set_gesture(fx(bypass[k]), if on { 1.0 } else { 0.0 });
+        }
+        text(ui, g, mid, 386.0, if on { "ON" } else { "BYPASS" }, 7.0, if on { INK } else { INK_DIM });
+    }
+
+    let lcd = |ui: &egui::Ui, cx: f32, y: f32, s: &str| {
+        fill(ui, g, cx - 38.0, y - 9.0, cx + 38.0, y + 9.0, 2.0, Color32::from_rgb(30, 4, 4));
+        text(ui, g, cx, y, s, 9.0, RED_LED);
+    };
+    // PHASER: the LFO lamp sweeps at the rate
+    let (x0, mid) = (X[0], X[0] + SW / 2.0);
+    let rate = access.get(fx(PhRate));
+    let hz = phaser_hz(rate);
+    let swing = 0.5 + 0.5 * ((now * hz as f64 * std::f64::consts::TAU).sin() as f32);
+    ui.painter().circle_filled(g.p(x0 + 24.0, 262.0), g.l(4.0), Color32::from_rgba_unmultiplied(255, 150, 60, (60.0 + 195.0 * swing) as u8));
+    text(ui, g, x0 + 24.0, 276.0, "LFO", 6.0, INK_DIM);
+    lcd(ui, mid + 14.0, 262.0, &spec(fx(PhRate)).format(rate));
+    text(ui, g, mid, 294.0, "4-STAGE  ·  COLOR = FEEDBACK", 5.5, INK_DIM);
+
+    // DISTORTION
+    let mid = X[1] + SW / 2.0;
+    let drive = access.get(fx(DsDrive));
+    let heat = drive.clamp(0.0, 1.0);
+    ui.painter().circle_filled(g.p(X[1] + 24.0, 262.0), g.l(4.0), Color32::from_rgb((80.0 + 175.0 * heat) as u8, 30, 20));
+    text(ui, g, X[1] + 24.0, 276.0, "CLIP", 6.0, INK_DIM);
+    lcd(ui, mid + 14.0, 262.0, &spec(fx(DsDrive)).format(drive));
+    text(ui, g, mid, 294.0, "OP-AMP CLIP  ·  4x OVERSAMPLED", 5.5, INK_DIM);
+
+    // DELAY: MODE (TAPE / BBD / MOD) and SYNC / FREE with the time shown
+    let x0 = X[2];
+    let mid = x0 + SW / 2.0;
+    let mode = access.get(fx(DlMode)).round().clamp(0.0, 2.0) as usize;
+    for (i, name) in DELAY_MODE_NAMES.iter().enumerate() {
+        let x = x0 + 24.0 + 47.0 * i as f32;
+        let lit = (i == mode).then_some(Color32::from_rgb(140, 230, 150));
+        if round_button(ui, g, Id::new(("dl_mode", i)), x, 248.0, 6.5, lit).on_hover_text(format!("Delay mode: {name}")).clicked() {
+            access.set_gesture(fx(DlMode), i as f32);
+        }
+        text(ui, g, x, 260.0, name, 6.5, INK);
+    }
+    let sync = access.get(fx(DlSync)) >= 0.5;
+    text(ui, g, x0 + 30.0, 281.0, "FREE", 6.5, INK);
+    text(ui, g, x0 + 112.0, 281.0, "SYNC", 6.5, INK);
+    if toggle_switch(ui, g, Id::new("dl_sync"), mid, 281.0, sync)
+        .on_hover_text("SYNC: the time follows the tempo in note values  ·  FREE: milliseconds")
+        .clicked()
+    {
+        access.set_gesture(fx(DlSync), if sync { 0.0 } else { 1.0 });
+    }
+    let tv = access.get(fx(DlTime));
+    let shown = if sync { DELAY_DIVISIONS[delay_division(tv)].0.to_string() } else { format!("{:.0} ms", delay_free_ms(tv)) };
+    lcd(ui, mid, 302.0, &shown);
+
+    // SPRING: KICK the tank
+    let x0 = X[3];
+    let mid = x0 + SW / 2.0;
+    let lamp = now - st.kick_time < 0.15;
+    if round_button(ui, g, Id::new("spring_kick"), mid, 260.0, 14.0, lamp.then_some(ORANGE_HI))
+        .on_hover_text("KICK: knock the spring tank (it crashes through the reverb)")
+        .clicked()
+    {
+        state.spring_kick.store(true, Relaxed);
+        st.kick_time = now;
+    }
+    text(ui, g, mid, 284.0, "KICK", 7.5, INK);
+    text(ui, g, mid, 298.0, "3 SPRINGS  ·  TANK DRIVE", 5.5, INK_DIM);
+
+    // bottom strip
+    text(ui, g, 120.0, 428.0, "FX  BUSES", 13.0, ORANGE_HI);
+    text(ui, g, 370.0, 424.0, "Turn up each voice's sends (PH  DS  DL  SP) in the module slots on the right.", 7.0, INK);
+    text(ui, g, 370.0, 437.0, "The effects go to the main stereo output; the separate voice outputs stay dry.", 7.0, INK_DIM);
+    fx_button(ui, g, st);
+}
+
 fn knob_face(ui: &egui::Ui, g: G, cx: f32, cy: f32, r: f32, norm: f32, pointer: Color32) {
     let p = ui.painter();
     let c = g.p(cx, cy);
@@ -193,7 +634,7 @@ fn knob_face(ui: &egui::Ui, g: G, cx: f32, cy: f32, r: f32, norm: f32, pointer: 
 fn knob(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, id: ParamId, cx: f32, cy: f32, r: f32) -> Response {
     let sp = spec(id);
     let rect = g.r(cx - r - 2.0, cy - r - 2.0, cx + r + 2.0, cy + r + 2.0);
-    let resp = ui.interact(rect, Id::new(("knob", id)), Sense::click_and_drag());
+    let resp = ui.interact(rect, Id::new(("knob", id)), g.sense(Sense::click_and_drag()));
     let value = access.get(id);
     let mut norm = sp.to_norm(value);
     if resp.drag_started() {
@@ -227,7 +668,7 @@ fn knob(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, id: ParamId, cx: f32,
 
 fn round_button(ui: &mut egui::Ui, g: G, id: Id, cx: f32, cy: f32, r: f32, lit: Option<Color32>) -> Response {
     let rect = g.r(cx - r, cy - r, cx + r, cy + r);
-    let resp = ui.interact(rect, id, Sense::click());
+    let resp = ui.interact(rect, id, g.sense(Sense::click()));
     let p = ui.painter();
     let c = g.p(cx, cy);
     p.circle_filled(c + vec2(0.0, g.l(1.5)), g.l(r + 1.0), Color32::from_black_alpha(150));
@@ -248,9 +689,9 @@ fn round_button(ui: &mut egui::Ui, g: G, id: Id, cx: f32, cy: f32, r: f32, lit: 
 
 fn toggle_switch(ui: &mut egui::Ui, g: G, id: Id, cx: f32, cy: f32, on: bool) -> Response {
     let rect = g.r(cx - 14.0, cy - 6.0, cx + 14.0, cy + 6.0);
-    let resp = ui.interact(rect, id, Sense::click());
+    let resp = ui.interact(rect, id, g.sense(Sense::click()));
+    fill(ui, g, cx - 14.0, cy - 6.0, cx + 14.0, cy + 6.0, 6.0, Color32::from_rgb(14, 15, 16));
     let p = ui.painter();
-    p.rect_filled(rect, g.l(6.0), Color32::from_rgb(14, 15, 16));
     let kx = if on { cx + 7.0 } else { cx - 7.0 };
     p.circle_filled(g.p(kx, cy), g.l(5.0), Color32::from_rgb(196, 200, 206));
     p.circle_filled(g.p(kx - 1.0, cy - 1.5), g.l(2.0), Color32::WHITE);
@@ -261,7 +702,7 @@ fn toggle_switch(ui: &mut egui::Ui, g: G, id: Id, cx: f32, cy: f32, on: bool) ->
 fn hfader(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, id: ParamId, x0: f32, x1: f32, y: f32, wedge: Color32) {
     let sp = spec(id);
     let rect = g.r(x0 - 6.0, y - 18.0, x1 + 6.0, y + 8.0);
-    let resp = ui.interact(rect, Id::new(("fader", id)), Sense::click_and_drag());
+    let resp = ui.interact(rect, Id::new(("fader", id)), g.sense(Sense::click_and_drag()));
     let set_from_pointer = |pos: Pos2| {
         let n = ((pos.x - g.p(x0, 0.0).x) / g.l(x1 - x0)).clamp(0.0, 1.0);
         access.set(id, sp.from_norm(n));
@@ -298,10 +739,9 @@ fn hfader(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, id: ParamId, x0: f3
         p.add(Shape::convex_polygon(lit.to_vec(), wedge, Stroke::NONE));
     }
     // track
-    p.rect_filled(g.r(x0, y - 1.5, x1, y + 1.5), g.l(1.0), Color32::from_rgb(8, 9, 10));
+    fill(ui, g, x0, y - 1.5, x1, y + 1.5, 1.0, Color32::from_rgb(8, 9, 10));
     // cap
-    let cap = g.r(xn - 5.0, y - 7.0, xn + 5.0, y + 7.0);
-    vgrad(ui, cap, Color32::from_rgb(235, 236, 238), Color32::from_rgb(120, 124, 130));
+    vgrad_d(ui, g, xn - 5.0, y - 7.0, xn + 5.0, y + 7.0, Color32::from_rgb(235, 236, 238), Color32::from_rgb(120, 124, 130));
     ui.painter().line_segment([g.p(xn, y - 6.0), g.p(xn, y + 6.0)], Stroke::new(g.l(1.5), Color32::from_rgb(30, 30, 30)));
     resp.on_hover_text(format!("{}: {:.0}%", sp.name, n * 100.0));
 }
@@ -353,6 +793,9 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
             access.set_gesture(ParamId::Mute(ch), if muted { 0.0 } else { 1.0 });
         }
         draw_row(ui, g, state, st, prog, ch, len, cur);
+        // A: NUDGE (up to half a step early or late), B: this voice's share of SOUND DRIFT
+        knob(ui, g, access, ParamId::Voice(ch, VoiceParam::Nudge), 604.0, y, 9.0);
+        knob(ui, g, access, ParamId::Voice(ch, VoiceParam::DriftAmount), 638.0, y, 9.0);
         // ONE (solo) buttons
         let solo = state.solo.load(Relaxed);
         let soloed = solo & (1 << ch) != 0;
@@ -381,6 +824,13 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
     p.line_segment([g.p(562.0, row_y(0)), g.p(562.0, row_y(5))], br);
     p.line_segment([g.p(558.0, row_y(5)), g.p(562.0, row_y(5))], br);
     text(ui, g, 571.0, row_y(2) + 21.0, "ONE", 7.5, INK);
+    text(ui, g, 604.0, 52.0, "NUDGE", 7.0, INK);
+    text(ui, g, 604.0, 61.0, "EARLY  LATE", 4.5, INK_DIM);
+    text(ui, g, 638.0, 52.0, "DRIFT", 7.0, INK);
+    text(ui, g, 638.0, 61.0, "AMOUNT", 4.5, INK_DIM);
+    let p = ui.painter();
+    p.line_segment([g.p(621.0, 70.0), g.p(621.0, 302.0)], Stroke::new(g.l(1.0), Color32::from_rgb(40, 41, 44)));
+    fx_button(ui, g, st);
 
     // master volume
     hfader(ui, g, access, ParamId::Master, 62.0, 112.0, 340.0, Color32::from_rgb(230, 52, 40));
@@ -415,6 +865,17 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
     {
         access.set_gesture(ParamId::Sound, if original { 0.0 } else { 1.0 });
     }
+
+    // TEMPO DRIFT / SOUND DRIFT (Minipop-style wobble)
+    // (placed under the STEPS row, as in the person's mock-up)
+    knob(ui, g, access, ParamId::TempoDrift, 248.0, 431.0, 10.0);
+    text(ui, g, 248.0, 451.0, "TEMPO DRIFT", 7.5, INK);
+    text(ui, g, 233.0, 442.0, "LATE", 5.5, INK_DIM);
+    text(ui, g, 264.0, 442.0, "EARLY", 5.5, INK_DIM);
+    knob(ui, g, access, ParamId::SoundDrift, 330.0, 431.0, 10.0);
+    text(ui, g, 330.0, 451.0, "SOUND DRIFT", 7.5, INK);
+    knob(ui, g, access, ParamId::Swing, 412.0, 431.0, 10.0);
+    text(ui, g, 412.0, 451.0, "SWING", 7.5, INK);
 
     // MULTIPLY mode selector (requested addition)
     let mult = state.multiply_mode.load(Relaxed);
@@ -553,7 +1014,7 @@ fn randomize_program(state: &SharedState, st: &mut UiState, prog: usize) {
 fn draw_row(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, prog: usize, ch: usize, len: usize, cur: i32) {
     let y = row_y(ch);
     let bar = g.r(GRID_X0 - 3.0, y - 10.0, GRID_X0 + CELL_W * 16.0 + 3.0, y + 10.0);
-    ui.painter().rect_filled(bar.expand(g.l(1.0)), g.l(2.0), Color32::from_rgb(16, 12, 10));
+    fill(ui, g, GRID_X0 - 4.0, y - 11.0, GRID_X0 + CELL_W * 16.0 + 4.0, y + 11.0, 2.0, Color32::from_rgb(16, 12, 10));
     for s in 0..NUM_STEPS {
         let x0 = GRID_X0 + CELL_W * s as f32;
         let cell = g.r(x0 + 0.8, y - 9.0, x0 + CELL_W - 0.8, y + 9.0);
@@ -575,26 +1036,26 @@ fn draw_row(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, prog
         } else {
             (Color32::from_rgb(214, 104, 50), Color32::from_rgb(168, 70, 30))
         };
-        vgrad(ui, cell, top, bot);
+        vgrad_d(ui, g, x0 + 0.8, y - 9.0, x0 + CELL_W - 0.8, y + 9.0, top, bot);
         if on && hits <= 1 {
-            ui.painter().rect_filled(g.r(x0 + 3.0, y - 2.0, x0 + CELL_W - 3.0, y + 2.0), g.l(1.0), Color32::WHITE);
-            ui.painter().rect_filled(cell.expand(g.l(1.5)), g.l(2.0), Color32::from_rgba_unmultiplied(255, 220, 120, 40));
+            fill(ui, g, x0 + 3.0, y - 2.0, x0 + CELL_W - 3.0, y + 2.0, 1.0, Color32::WHITE);
+            fill(ui, g, x0 - 0.7, y - 10.5, x0 + CELL_W + 0.7, y + 10.5, 2.0, Color32::from_rgba_unmultiplied(255, 220, 120, 40));
         } else if hits >= 2 {
             // one small light per hit inside the step
             let glow = 20 + 25 * hits as u8;
-            ui.painter().rect_filled(cell.expand(g.l(1.5)), g.l(2.0), Color32::from_rgba_unmultiplied(120, 255, 120, glow));
+            fill(ui, g, x0 - 0.7, y - 10.5, x0 + CELL_W + 0.7, y + 10.5, 2.0, Color32::from_rgba_unmultiplied(120, 255, 120, glow));
             let w = (CELL_W - 4.0) / hits as f32;
             for k in 0..hits {
                 let sx = x0 + 2.0 + w * k as f32;
-                ui.painter().rect_filled(g.r(sx + 0.6, y - 2.0, sx + w - 0.6, y + 2.0), g.l(0.8), Color32::from_rgb(235, 255, 225));
+                fill(ui, g, sx + 0.6, y - 2.0, sx + w - 0.6, y + 2.0, 0.8, Color32::from_rgb(235, 255, 225));
             }
         }
         // thin step divider, like the light-strip bars of the hardware
         ui.painter().line_segment([g.p(x0 + CELL_W, y - 9.0), g.p(x0 + CELL_W, y + 9.0)], Stroke::new(g.l(0.8), Color32::from_rgb(70, 30, 12)));
         if cur == s as i32 {
-            ui.painter().rect_filled(cell, 0.0, Color32::from_white_alpha(60));
+            fill(ui, g, x0 + 0.8, y - 9.0, x0 + CELL_W - 0.8, y + 9.0, 0.0, Color32::from_white_alpha(60));
         }
-        let resp = ui.interact(cell, Id::new(("cell", ch, s)), Sense::click_and_drag());
+        let resp = ui.interact(cell, Id::new(("cell", ch, s)), g.sense(Sense::click_and_drag()));
         if state.multiply_mode.load(Relaxed) {
             if resp.clicked() {
                 state.cycle_hits(prog, ch, s);
@@ -627,13 +1088,14 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
     ui.painter().rect_stroke(plate, g.l(3.0), Stroke::new(g.l(2.0), Color32::from_rgb(90, 62, 34)), egui::StrokeKind::Inside);
     text(ui, g, 659.0, 60.0, "GERANIUM", 10.0, Color32::from_rgb(60, 36, 20));
     text(ui, g, 659.0, 71.0, "RHYTHM  SYNTH", 6.5, Color32::from_rgb(90, 60, 36));
+    text(ui, g, 659.0, 170.0, concat!("v", env!("CARGO_PKG_VERSION")), 6.5, Color32::from_rgb(90, 60, 36));
     text(ui, g, 659.0, 88.0, "RITMO · 6", 22.0, Color32::from_rgb(150, 24, 18));
     // factory kit selector (the original's 16 programs)
     let kit = state.kit.load(Relaxed) as usize;
     ui.painter().rect_filled(g.r(628.0, 108.0, 690.0, 128.0), g.l(2.0), Color32::from_rgb(30, 4, 4));
     text(ui, g, 659.0, 118.0, &(if kit == 0 { "MINI".to_string() } else { format!("KIT {:02}", kit) }), 11.0, RED_LED);
-    let kl = ui.interact(g.r(606.0, 108.0, 626.0, 128.0), Id::new("kit_dn"), Sense::click());
-    let kr = ui.interact(g.r(692.0, 108.0, 712.0, 128.0), Id::new("kit_up"), Sense::click());
+    let kl = ui.interact(g.r(606.0, 108.0, 626.0, 128.0), Id::new("kit_dn"), g.sense(Sense::click()));
+    let kr = ui.interact(g.r(692.0, 108.0, 712.0, 128.0), Id::new("kit_up"), g.sense(Sense::click()));
     let arrow = |x: f32, dir: f32| vec![g.p(x - 5.0 * dir, 118.0), g.p(x + 5.0 * dir, 112.0), g.p(x + 5.0 * dir, 124.0)];
     ui.painter().add(Shape::convex_polygon(arrow(617.0, 1.0), Color32::from_rgb(60, 36, 20), Stroke::NONE));
     ui.painter().add(Shape::convex_polygon(arrow(701.0, -1.0).into_iter().rev().collect(), Color32::from_rgb(60, 36, 20), Stroke::NONE));
@@ -651,11 +1113,11 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
     }
     let lamp = state.running.load(Relaxed) || state.host_driven.load(Relaxed);
     ui.painter().circle_filled(g.p(659.0, 146.0), g.l(3.5), if lamp { RED_LED } else { Color32::from_rgb(90, 24, 20) });
-    if round_button(ui, g, Id::new("bank_load"), 626.0, 148.0, 8.0, None).on_hover_text("Load a bank (all programs and modules)").clicked() {
+    if round_button(ui, g, Id::new("bank_load"), 626.0, 148.0, 8.0, None).on_hover_text("LOAD: open a bank file — the 16 rhythm programs (with MULTIPLY), all sounds, mixer and tempo").clicked() {
         let m = bank::load_bank_dialog(access, state);
         say(st, m, now);
     }
-    if round_button(ui, g, Id::new("bank_save"), 692.0, 148.0, 8.0, None).on_hover_text("Save the bank").clicked() {
+    if round_button(ui, g, Id::new("bank_save"), 692.0, 148.0, 8.0, None).on_hover_text("SAVE: save everything in one bank file — the 16 rhythm programs (with MULTIPLY), all sounds, mixer and tempo").clicked() {
         let m = bank::save_bank_dialog(access, state);
         say(st, m, now);
     }
@@ -670,8 +1132,8 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
     let chn = state.midi_channel.load(Relaxed);
     let label = if chn == 0 { "All".to_string() } else { chn.to_string() };
     text(ui, g, 660.0, 211.0, &label, 15.0, RED_LED);
-    let left = ui.interact(g.r(606.0, 200.0, 628.0, 222.0), Id::new("midi_dn"), Sense::click());
-    let right = ui.interact(g.r(692.0, 200.0, 714.0, 222.0), Id::new("midi_up"), Sense::click());
+    let left = ui.interact(g.r(606.0, 200.0, 628.0, 222.0), Id::new("midi_dn"), g.sense(Sense::click()));
+    let right = ui.interact(g.r(692.0, 200.0, 714.0, 222.0), Id::new("midi_up"), g.sense(Sense::click()));
     let tri = |x: f32, dir: f32| {
         vec![g.p(x - 5.0 * dir, 211.0), g.p(x + 5.0 * dir, 205.0), g.p(x + 5.0 * dir, 217.0)]
     };
@@ -689,18 +1151,34 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
         for ch in 0..NUM_CH {
         let x = 596.0 + ch as f32 * 21.5;
         let slot = g.r(x, 264.0, x + 18.0, 456.0);
-        let resp = ui.interact(slot, Id::new(("slot", ch)), Sense::click());
+        let resp = ui.interact(slot, Id::new(("slot", ch)), g.sense(Sense::click()));
         let hot = resp.hovered();
         vgrad(ui, slot, if hot { Color32::from_rgb(70, 74, 72) } else { Color32::from_rgb(44, 46, 46) }, Color32::from_rgb(18, 19, 19));
         ui.painter().rect_stroke(slot, g.l(1.0), Stroke::new(g.l(1.0), Color32::from_rgb(10, 10, 10)), egui::StrokeKind::Inside);
         let name = format!("{}0{}", VOICE_LETTERS[ch], ch + 1);
-        for (k, c) in name.chars().enumerate() {
-            text(ui, g, x + 9.0, 278.0 + k as f32 * 12.0, &c.to_string(), 9.5, INK);
+        text(ui, g, x + 9.0, 273.0, &name, 6.5, INK);
+        // TUNE on every strip, with the note it plays (click the note to tune exactly to it)
+        let tune_id = ParamId::Voice(ch, VoiceParam::ToneTune);
+        text(ui, g, x + 9.0, 283.0, "TUNE", 4.5, Color32::from_rgb(230, 200, 140));
+        knob(ui, g, access, tune_id, x + 9.0, 293.0, 6.5);
+        let tune = access.get(tune_id);
+        let (note, cents) = crate::params::note_of_volts(tune);
+        let lcd = g.r(x + 1.0, 302.0, x + 17.0, 313.0);
+        let nr = ui.interact(lcd, Id::new(("slot_note", ch)), g.sense(Sense::click()));
+        ui.painter().rect_filled(lcd, g.l(1.5), if nr.hovered() { Color32::from_rgb(50, 8, 8) } else { Color32::from_rgb(30, 4, 4) });
+        text(ui, g, x + 9.0, 307.5, &note, 5.5, RED_LED);
+        if nr
+            .on_hover_text(format!("{note} {cents:+} cents ({:.1} Hz). Click to tune exactly to {note}.", crate::params::volts_to_hz(tune)))
+            .clicked()
+        {
+            access.set_gesture(tune_id, crate::params::snap_to_note(tune).clamp(0.0, 10.0));
+            state.trig_req.fetch_or(1 << ch, Relaxed);
         }
-        // little circuit details
-        for k in 0..6 {
-            let yy = 330.0 + k as f32 * 18.0;
-            ui.painter().rect_filled(g.r(x + 4.0, yy, x + 14.0, yy + 6.0), 0.0, Color32::from_rgb(60, 92, 70));
+        // the voice's four FX sends (post-fader, post-pan)
+        for k in 0..NUM_FX_BUSES {
+            let yy = 324.0 + k as f32 * 27.0;
+            text(ui, g, x + 9.0, yy, FX_BUS_SHORT[k], 5.0, Color32::from_rgb(150, 200, 160));
+            knob(ui, g, access, ParamId::Send(ch, k), x + 9.0, yy + 11.0, 6.5);
         }
         let lamp = now - st.lamp_time[ch] < 0.12;
         ui.painter().circle_filled(g.p(x + 9.0, 446.0), g.l(2.5), if lamp { RED_LED } else { Color32::from_rgb(70, 20, 18) });
@@ -743,6 +1221,22 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
         knob(ui, g, access, vk(p), x, y, 10.0);
         text(ui, g, x, y + 16.0, voice_spec(p).short, 6.0, INK);
     }
+    // the note TUNE sits on (to match a kick to the key of a song); click = snap to that note
+    let tune = access.get(vk(VoiceParam::ToneTune));
+    let (note, cents) = crate::params::note_of_volts(tune);
+    let lcd = g.r(684.0, 118.0, 724.0, 136.0);
+    let resp = ui.interact(lcd, Id::new(("tune_note", ch)), g.sense(Sense::click()));
+    ui.painter().rect_filled(lcd, g.l(2.0), if resp.hovered() { Color32::from_rgb(50, 8, 8) } else { Color32::from_rgb(30, 4, 4) });
+    text(ui, g, 704.0, 124.5, &note, 9.0, RED_LED);
+    let off = if cents == 0 { "in tune".to_string() } else { format!("{cents:+} ct") };
+    text(ui, g, 704.0, 132.0, &off, 5.0, Color32::from_rgb(200, 60, 50));
+    if resp
+        .on_hover_text(format!("TUNE note: {note} {cents:+} cents ({:.1} Hz). Click to tune exactly to {note}.", crate::params::volts_to_hz(tune)))
+        .clicked()
+    {
+        access.set_gesture(vk(VoiceParam::ToneTune), crate::params::snap_to_note(tune).clamp(0.0, 10.0));
+        state.trig_req.fetch_or(1 << ch, Relaxed);
+    }
     text(ui, g, 704.0, 147.0, "TONE", 8.0, gold);
     text(ui, g, 704.0, 158.0, "OSC", 8.0, gold);
 
@@ -753,11 +1247,11 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
     ui.painter().rect_filled(sb, g.l(3.0), Color32::from_rgb(26, 44, 120));
     text(ui, g, 616.0, 204.0, "LOAD", 7.5, INK);
     text(ui, g, 702.0, 204.0, "SAVE", 7.5, INK);
-    if ui.interact(lb, Id::new(("mod_load", ch)), Sense::click()).on_hover_text("Load a module sound").clicked() {
+    if ui.interact(lb, Id::new(("mod_load", ch)), g.sense(Sense::click())).on_hover_text("Load a module sound").clicked() {
         let m = bank::load_module_dialog(access, ch);
         say(st, m, now);
     }
-    if ui.interact(sb, Id::new(("mod_save", ch)), Sense::click()).on_hover_text("Save this module sound").clicked() {
+    if ui.interact(sb, Id::new(("mod_save", ch)), g.sense(Sense::click())).on_hover_text("Save this module sound").clicked() {
         let m = bank::save_module_dialog(access, ch);
         say(st, m, now);
     }
@@ -805,7 +1299,7 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
     text(ui, g, 692.0, 374.0, "TRIG", 6.5, INK);
 
     let close = g.r(612.0, 420.0, 706.0, 444.0);
-    let r = ui.interact(close, Id::new("mod_close"), Sense::click());
+    let r = ui.interact(close, Id::new("mod_close"), g.sense(Sense::click()));
     ui.painter().rect_filled(close, g.l(4.0), if r.hovered() { Color32::from_rgb(80, 84, 82) } else { Color32::from_rgb(50, 54, 52) });
     text(ui, g, 659.0, 432.0, "CLOSE", 9.0, INK);
     if r.clicked() {

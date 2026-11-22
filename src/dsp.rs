@@ -23,10 +23,14 @@ pub struct VoiceSettings {
     pub filter_decay: f32,
     pub filter_hp: f32,
     pub pan_random: f32,
+    /// timing offset, -1..1 = half a step early / late (column A)
+    pub nudge: f32,
+    /// share of SOUND DRIFT for this voice, 0..1 (column B)
+    pub drift_amount: f32,
 }
 
 impl VoiceSettings {
-    pub fn from_array(v: &[f32; 14]) -> Self {
+    pub fn from_array(v: &[f32; 16]) -> Self {
         VoiceSettings {
             tone_tune: v[0],
             tone_decay: v[1],
@@ -42,6 +46,8 @@ impl VoiceSettings {
             filter_decay: v[11],
             filter_hp: v[12],
             pan_random: v[13],
+            nudge: v[14],
+            drift_amount: v[15],
         }
     }
 }
@@ -118,6 +124,15 @@ pub struct Voice {
     /// Pan offset in volts drawn at the last hit (Pan Random).
     pub pan_offset: f32,
     classic: Classic,
+    /// MULTIPLY saturation: a "capacitor" charged by each hit and slowly discharged.
+    /// A normal hit sets it to 1; each extra hit inside a step adds 1 more, and the excess
+    /// over 1 drives the voice into saturation (like an 808/909 retriggered too fast).
+    charge: f32,
+    /// SOUND DRIFT offsets drawn at the last hit.
+    drift_pitch_v: f32,
+    drift_decay_v: f32,
+    drift_cutoff_v: f32,
+    drift_gain: f32,
 }
 
 impl Voice {
@@ -133,7 +148,61 @@ impl Voice {
             rng: seed | 1,
             pan_offset: 0.0,
             classic: Classic::default(),
+            charge: 0.0,
+            drift_pitch_v: 0.0,
+            drift_decay_v: 0.0,
+            drift_cutoff_v: 0.0,
+            drift_gain: 1.0,
         }
+    }
+
+    /// Strike the voice.
+    /// - `pan_random` 0..1 widens a random pan offset (up to +-5 V).
+    /// - `sound_drift` 0..1: random pitch (up to +-1.4 semitones), decay (+-0.5 V, about x/1.4),
+    ///   cutoff (+-0.6 V) and level (+-25 %) for this hit.
+    /// - `stacked`: an extra MULTIPLY hit inside a step; it adds charge instead of resetting it.
+    pub fn strike(&mut self, pan_random: f32, sound_drift: f32, stacked: bool) {
+        self.trigger(pan_random);
+        let d = sound_drift.clamp(0.0, 1.0);
+        if d > 0.0 {
+            self.drift_pitch_v = self.rand() * 0.12 * d;
+            self.drift_decay_v = self.rand() * 0.5 * d;
+            self.drift_cutoff_v = self.rand() * 0.6 * d;
+            self.drift_gain = 1.0 + self.rand() * 0.25 * d;
+        } else {
+            self.drift_pitch_v = 0.0;
+            self.drift_decay_v = 0.0;
+            self.drift_cutoff_v = 0.0;
+            self.drift_gain = 1.0;
+        }
+        self.charge = if stacked { self.charge + 1.0 } else { 1.0 };
+    }
+
+    /// Render one sample with SOUND DRIFT and MULTIPLY saturation applied around the engine.
+    pub fn render(&mut self, s: &VoiceSettings, sr: f32, classic: bool) -> f32 {
+        let mut d = *s;
+        if self.drift_gain != 1.0 || self.drift_pitch_v != 0.0 {
+            d.tone_tune += self.drift_pitch_v;
+            d.pm_rate += self.drift_pitch_v;
+            d.tone_decay += self.drift_decay_v;
+            d.noise_decay += self.drift_decay_v;
+            d.filter_freq += self.drift_cutoff_v;
+        }
+        let raw = self.render_engine(&d, sr, classic) * self.drift_gain;
+
+        // capacitor discharge: faster for short sounds (20..400 ms time constant)
+        if self.charge > 0.0 {
+            let tau = (env_seconds(s.tone_decay.max(s.noise_decay)) * 0.4).clamp(0.02, 0.4);
+            self.charge *= (-1.0 / (tau * sr)).exp();
+        }
+        let heat = (self.charge - 1.0).max(0.0);
+        if heat <= 0.0 {
+            return raw;
+        }
+        let mix = heat.min(1.0);
+        let x = raw * (1.0 + 0.5 * heat);
+        let sat = (x * (1.0 + 2.0 * heat)).tanh();
+        raw + (sat - raw) * mix
     }
 
     #[inline]
@@ -146,8 +215,7 @@ impl Voice {
         (x as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 
-    /// Strike the voice. `pan_random` 0..1 widens a random pan offset (up to +-5 V).
-    pub fn trigger(&mut self, pan_random: f32) {
+    fn trigger(&mut self, pan_random: f32) {
         self.tone_env.trigger();
         self.pitch_env.trigger();
         self.noise_env.trigger();
@@ -157,7 +225,7 @@ impl Voice {
     }
 
     /// `classic` picks the MINI sound (the first-day engine) instead of the decoded original.
-    pub fn render(&mut self, s: &VoiceSettings, sr: f32, classic: bool) -> f32 {
+    fn render_engine(&mut self, s: &VoiceSettings, sr: f32, classic: bool) -> f32 {
         if classic {
             let n = self.rand();
             return self.classic.render(s, sr, n);

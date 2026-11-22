@@ -5,6 +5,7 @@ pub mod bank;
 pub mod classic;
 pub mod dsp;
 pub mod engine;
+pub mod fx;
 pub mod kits;
 pub mod params;
 pub mod presets;

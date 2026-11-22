@@ -33,6 +33,8 @@ pub struct SharedState {
     pub bpm_bits: AtomicU32,
     /// Factory kit last loaded (0..16).
     pub kit: AtomicU8,
+    /// KICK button of the spring reverb (taken by the audio thread).
+    pub spring_kick: AtomicBool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -68,6 +70,7 @@ impl Default for SharedState {
             host_driven: AtomicBool::new(false),
             bpm_bits: AtomicU32::new(120f32.to_bits()),
             kit: AtomicU8::new(0),
+            spring_kick: AtomicBool::new(false),
         };
         s.load_factory();
         s

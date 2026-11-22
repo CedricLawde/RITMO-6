@@ -2,7 +2,10 @@
 
 use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::*;
-use nih_plug_egui::{create_egui_editor, EguiState};
+use nih_plug_egui::resizable_window::ResizableWindow;
+use nih_plug_egui::{create_egui_editor, egui, EguiState};
+
+
 use ritmo6_core::engine::{Engine, Transport, Values};
 use ritmo6_core::params::{self as rp, ParamAccess, ParamId, VoiceParam, NUM_CH, VOICE_LETTERS};
 use ritmo6_core::state::{PatternData, SharedState};
@@ -27,7 +30,9 @@ impl<'a> PersistentField<'a, PatternData> for PatternStore {
 fn fparam(id: ParamId) -> FloatParam {
     let s = rp::spec(id);
     let name = match id {
-        ParamId::Level(c) | ParamId::Pan(c) | ParamId::Voice(c, _) => format!("{} {}", VOICE_LETTERS[c], s.name),
+        ParamId::Level(c) | ParamId::Pan(c) | ParamId::Voice(c, _) | ParamId::Send(c, _) => {
+            format!("{} {}", VOICE_LETTERS[c], s.name)
+        }
         _ => s.name.to_string(),
     };
     let range = FloatRange::Linear { min: s.min, max: s.max };
@@ -80,6 +85,18 @@ pub struct ChannelParams {
     pub filter_hp: FloatParam,
     #[id = "panrnd"]
     pub pan_random: FloatParam,
+    #[id = "nudge"]
+    pub nudge: FloatParam,
+    #[id = "drshare"]
+    pub drift_amount: FloatParam,
+    #[id = "sph"]
+    pub send_phaser: FloatParam,
+    #[id = "sds"]
+    pub send_dist: FloatParam,
+    #[id = "sdl"]
+    pub send_delay: FloatParam,
+    #[id = "ssp"]
+    pub send_spring: FloatParam,
 }
 
 impl ChannelParams {
@@ -103,6 +120,150 @@ impl ChannelParams {
             filter_decay: v(VoiceParam::FilterDecay),
             filter_hp: v(VoiceParam::FilterHp),
             pan_random: v(VoiceParam::PanRandom),
+            nudge: v(VoiceParam::Nudge),
+            drift_amount: v(VoiceParam::DriftAmount),
+            send_phaser: fparam(ParamId::Send(c, 0)),
+            send_dist: fparam(ParamId::Send(c, 1)),
+            send_delay: fparam(ParamId::Send(c, 2)),
+            send_spring: fparam(ParamId::Send(c, 3)),
+        }
+    }
+}
+
+/// The shared FX section (host automation and project state).
+#[derive(Params)]
+pub struct FxParams {
+    #[id = "ph_rate"]
+    pub ph_rate: FloatParam,
+    #[id = "ph_depth"]
+    pub ph_depth: FloatParam,
+    #[id = "ph_color"]
+    pub ph_color: FloatParam,
+    #[id = "ph_mix"]
+    pub ph_mix: FloatParam,
+    #[id = "ph_level"]
+    pub ph_level: FloatParam,
+    #[id = "ph_bypass"]
+    pub ph_bypass: BoolParam,
+    #[id = "ds_drive"]
+    pub ds_drive: FloatParam,
+    #[id = "ds_filter"]
+    pub ds_filter: FloatParam,
+    #[id = "ds_fat"]
+    pub ds_fat: FloatParam,
+    #[id = "ds_mix"]
+    pub ds_mix: FloatParam,
+    #[id = "ds_level"]
+    pub ds_level: FloatParam,
+    #[id = "ds_bypass"]
+    pub ds_bypass: BoolParam,
+    #[id = "dl_time"]
+    pub dl_time: FloatParam,
+    #[id = "dl_feedback"]
+    pub dl_feedback: FloatParam,
+    #[id = "dl_tone"]
+    pub dl_tone: FloatParam,
+    #[id = "dl_age"]
+    pub dl_age: FloatParam,
+    #[id = "dl_mod"]
+    pub dl_mod: FloatParam,
+    #[id = "dl_mix"]
+    pub dl_mix: FloatParam,
+    #[id = "dl_level"]
+    pub dl_level: FloatParam,
+    #[id = "dl_bypass"]
+    pub dl_bypass: BoolParam,
+    #[id = "dl_mode"]
+    pub dl_mode: FloatParam,
+    #[id = "dl_sync"]
+    pub dl_sync: BoolParam,
+    #[id = "sp_decay"]
+    pub sp_decay: FloatParam,
+    #[id = "sp_damping"]
+    pub sp_damping: FloatParam,
+    #[id = "sp_tension"]
+    pub sp_tension: FloatParam,
+    #[id = "sp_drive"]
+    pub sp_drive: FloatParam,
+    #[id = "sp_mix"]
+    pub sp_mix: FloatParam,
+    #[id = "sp_level"]
+    pub sp_level: FloatParam,
+    #[id = "sp_bypass"]
+    pub sp_bypass: BoolParam,
+}
+
+impl FxParams {
+    fn new() -> Self {
+        use rp::FxParam::*;
+        let f = |p| fparam(ParamId::Fx(p));
+        let b = |p| bparam(ParamId::Fx(p));
+        FxParams {
+            ph_rate: f(PhRate),
+            ph_depth: f(PhDepth),
+            ph_color: f(PhColor),
+            ph_mix: f(PhMix),
+            ph_level: f(PhLevel),
+            ph_bypass: b(PhBypass),
+            ds_drive: f(DsDrive),
+            ds_filter: f(DsFilter),
+            ds_fat: f(DsFat),
+            ds_mix: f(DsMix),
+            ds_level: f(DsLevel),
+            ds_bypass: b(DsBypass),
+            dl_time: f(DlTime),
+            dl_feedback: f(DlFeedback),
+            dl_tone: f(DlTone),
+            dl_age: f(DlAge),
+            dl_mod: f(DlMod),
+            dl_mix: f(DlMix),
+            dl_level: f(DlLevel),
+            dl_bypass: b(DlBypass),
+            dl_mode: f(DlMode).with_step_size(1.0),
+            dl_sync: b(DlSync),
+            sp_decay: f(SpDecay),
+            sp_damping: f(SpDamping),
+            sp_tension: f(SpTension),
+            sp_drive: f(SpDrive),
+            sp_mix: f(SpMix),
+            sp_level: f(SpLevel),
+            sp_bypass: b(SpBypass),
+        }
+    }
+
+    fn pref(&self, p: rp::FxParam) -> PRef<'_> {
+        use rp::FxParam::*;
+        use PRef::*;
+        match p {
+            PhRate => F(&self.ph_rate),
+            PhDepth => F(&self.ph_depth),
+            PhColor => F(&self.ph_color),
+            PhMix => F(&self.ph_mix),
+            PhLevel => F(&self.ph_level),
+            PhBypass => B(&self.ph_bypass),
+            DsDrive => F(&self.ds_drive),
+            DsFilter => F(&self.ds_filter),
+            DsFat => F(&self.ds_fat),
+            DsMix => F(&self.ds_mix),
+            DsLevel => F(&self.ds_level),
+            DsBypass => B(&self.ds_bypass),
+            DlTime => F(&self.dl_time),
+            DlFeedback => F(&self.dl_feedback),
+            DlTone => F(&self.dl_tone),
+            DlAge => F(&self.dl_age),
+            DlMod => F(&self.dl_mod),
+            DlMix => F(&self.dl_mix),
+            DlLevel => F(&self.dl_level),
+            DlBypass => B(&self.dl_bypass),
+            DlMode => F(&self.dl_mode),
+            DlSync => B(&self.dl_sync),
+            SpDecay => F(&self.sp_decay),
+            SpDamping => F(&self.sp_damping),
+            SpTension => F(&self.sp_tension),
+            SpDrive => F(&self.sp_drive),
+            SpMix => F(&self.sp_mix),
+            SpLevel => F(&self.sp_level),
+            SpBypass => B(&self.sp_bypass),
         }
     }
 }
@@ -123,6 +284,14 @@ pub struct RitmoParams {
     pub sync: BoolParam,
     #[id = "sound"]
     pub sound: BoolParam,
+    #[id = "tdrift"]
+    pub tempo_drift: FloatParam,
+    #[id = "sdrift"]
+    pub sound_drift: FloatParam,
+    #[id = "swing"]
+    pub swing: FloatParam,
+    #[nested(group = "FX")]
+    pub fx: FxParams,
 }
 
 enum PRef<'a> {
@@ -140,6 +309,10 @@ impl RitmoParams {
             tempo: fparam(ParamId::Tempo),
             sync: bparam(ParamId::Sync),
             sound: bparam(ParamId::Sound),
+            tempo_drift: fparam(ParamId::TempoDrift),
+            sound_drift: fparam(ParamId::SoundDrift),
+            swing: fparam(ParamId::Swing),
+            fx: FxParams::new(),
         }
     }
 
@@ -153,6 +326,14 @@ impl RitmoParams {
             ParamId::Tempo => F(&self.tempo),
             ParamId::Sync => B(&self.sync),
             ParamId::Sound => B(&self.sound),
+            ParamId::TempoDrift => F(&self.tempo_drift),
+            ParamId::SoundDrift => F(&self.sound_drift),
+            ParamId::Swing => F(&self.swing),
+            ParamId::Send(c, k) => {
+                let ch = &self.ch[c];
+                F([&ch.send_phaser, &ch.send_dist, &ch.send_delay, &ch.send_spring][k.min(3)])
+            }
+            ParamId::Fx(p) => self.fx.pref(p),
             ParamId::Voice(c, p) => {
                 let ch = &self.ch[c];
                 match p {
@@ -170,6 +351,8 @@ impl RitmoParams {
                     VoiceParam::FilterDecay => F(&ch.filter_decay),
                     VoiceParam::FilterHp => F(&ch.filter_hp),
                     VoiceParam::PanRandom => F(&ch.pan_random),
+                    VoiceParam::Nudge => F(&ch.nudge),
+                    VoiceParam::DriftAmount => F(&ch.drift_amount),
                 }
             }
         }
@@ -278,13 +461,18 @@ impl Plugin for Ritmo6 {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
         let state = self.state.clone();
+        let editor_state = self.params.editor_state.clone();
         create_egui_editor(
             self.params.editor_state.clone(),
             ui::UiState::default(),
             |_, _| {},
             move |ctx, setter, st| {
                 let access = Access { p: &params, s: setter };
-                ui::draw(ctx, &access, &state, st);
+                // resizable like the standalone (HiDPI screens, bigger panel): drag the corner at the
+                // bottom right; the panel scales to fit and the host keeps the size with the project
+                ResizableWindow::new("ritmo6-window")
+                    .min_size(egui::vec2(ui::W * 0.6, ui::H * 0.6))
+                    .show(ctx, &editor_state, |ui| ui::draw_in(ui, &access, &state, st));
             },
         )
     }

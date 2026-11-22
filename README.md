@@ -3,7 +3,9 @@
 **Free 6-voice analog-style drum machine — VST3 · CLAP · standalone (Windows 64-bit)**
 *Boîte à rythmes analogique 6 voix, gratuite — VST3 · CLAP · autonome (Windows 64 bits)*
 
-![Ritmo-6 manual](manual/mode-emploi-ritmo6.png)
+![Ritmo-6 user manual](manual/user-manual-ritmo6.png)
+
+*Mode d'emploi en français : [manual/mode-emploi-ritmo6.png](manual/mode-emploi-ritmo6.png)*
 
 ## Features / Fonctions
 - 6 synthesized voices (tone oscillator with pitch sweep + filtered noise), each with its own sound module, RAND, LOAD/SAVE
@@ -13,6 +15,8 @@
 - **PAN RND**: random panning per hit
 - Mixer with volume, pan, trig, mute, solo (ONE/ALL); stereo mix + 6 separate outputs
 - Internal tempo or host sync (1/8, 1/8T, 1/16, 1/32); MIDI keyboard control
+- **TEMPO DRIFT**, **SOUND DRIFT** and **SWING**; per-voice **NUDGE** (up to half a step early or late) and drift amount
+- **FX panel** behind the front plate (press FX): phaser, op-amp distortion, delay (TAPE / BBD / MOD, sync or free) and spring reverb with KICK; 4 sends per voice. The separate outputs stay dry.
 
 ## Install / Installation
 Download the latest files from the **Releases** page:

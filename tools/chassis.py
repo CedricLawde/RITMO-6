@@ -1,6 +1,6 @@
 # Blender script: renders the Ritmo-6 chassis (front view, orthographic) to a PNG.
 # Run:  blender -b --factory-startup --python tools/chassis.py -- assets/chassis.png
-# Scene units match the panel's design pixels (760 x 490): x = px - 380, z = 245 - py.
+# Scene units match the panel's design pixels (W x 490): x = px - W/2, z = 245 - py.
 import bpy
 import math
 import sys
@@ -8,6 +8,8 @@ import sys
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 OUT = argv[0] if argv else "chassis.png"
 SCALE = 2  # render at 2x the design size
+W = 840     # design width (760 + 80 for the NUDGE / DRIFT columns)
+E = W - 760
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
@@ -15,7 +17,7 @@ scene.render.engine = 'CYCLES'
 scene.cycles.device = 'CPU'
 scene.cycles.samples = 64
 scene.cycles.use_denoising = True
-scene.render.resolution_x = 760 * SCALE
+scene.render.resolution_x = W * SCALE
 scene.render.resolution_y = 490 * SCALE
 scene.render.resolution_percentage = 100
 scene.render.film_transparent = True
@@ -81,7 +83,7 @@ def box(name, x0, y0, x1, y1, depth, front, bevel, material, segments=5):
     o = bpy.context.active_object
     o.name = name
     o.scale = (w, depth, h)
-    o.location = ((x0 + x1) / 2 - 380, front + depth / 2, 245 - (y0 + y1) / 2)
+    o.location = ((x0 + x1) / 2 - W / 2, front + depth / 2, 245 - (y0 + y1) / 2)
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     if bevel > 0:
         b = o.modifiers.new("bevel", "BEVEL")
@@ -97,7 +99,7 @@ def screw(px, py, r=3.2):
     bpy.ops.mesh.primitive_cylinder_add(radius=r, depth=2.0, vertices=24)
     o = bpy.context.active_object
     o.rotation_euler = (math.radians(90), 0, 0)
-    o.location = (px - 380, -4.5, 245 - py)
+    o.location = (px - W / 2, -4.5, 245 - py)
     o.data.materials.append(CHROME)
     bpy.ops.object.shade_smooth()
     # slot
@@ -113,29 +115,29 @@ ORANGE = mat("orange", (0.80, 0.25, 0.03), rough=0.2, bump=0.02)
 BROWN = mat("brown", (0.05, 0.03, 0.02), rough=0.35)
 
 # shell: one rounded moulding with a raised lip around the face
-box("case", 8, 18, 752, 480, 90, 0, 26, IVORY, 8)
-box("lip", 26, 30, 742, 470, 6, -2.0, 10, IVORY_DARK, 6)
+box("case", 8, 18, W - 8, 480, 90, 0, 26, IVORY, 8)
+box("lip", 26, 30, W - 18, 470, 6, -2.0, 10, IVORY_DARK, 6)
 # moulded side grips (grooves)
 for x in (14, 20):
     box("groove", x, 120, x + 3, 380, 2, -0.6, 1.2, IVORY_DARK, 3)
-    box("groove", 760 - x - 3, 120, 760 - x, 380, 2, -0.6, 1.2, IVORY_DARK, 3)
+    box("groove", W - x - 3, 120, W - x, 380, 2, -0.6, 1.2, IVORY_DARK, 3)
 # plastic carrying handle, moulded with the shell
-box("handle_l", 290, 2, 316, 26, 20, -8, 8, IVORY, 6)
-box("handle_r", 444, 2, 470, 26, 20, -8, 8, IVORY, 6)
-box("handle", 300, 3, 460, 15, 16, -6, 6, IVORY, 6)
+box("handle_l", W / 2 - 90, 2, W / 2 - 64, 26, 20, -8, 8, IVORY, 6)
+box("handle_r", W / 2 + 64, 2, W / 2 + 90, 26, 20, -8, 8, IVORY, 6)
+box("handle", W / 2 - 80, 3, W / 2 + 80, 15, 16, -6, 6, IVORY, 6)
 # round rubber feet
-for (x0, x1) in ((112, 158), (602, 648)):
+for (x0, x1) in ((112, 158), (W - 158, W - 112)):
     box("foot", x0, 474, x1, 489, 40, 6, 7, BROWN, 6)
 # charcoal faceplate and orange side panel, with soft rounded edges
-box("plate", 34, 38, 582, 464, 4, -4.0, 4, CHARCOAL, 5)
-box("bay", 584, 34, 734, 468, 4, -4.0, 5, ORANGE, 5)
-box("bay_inner", 589, 254, 729, 462, 2, -4.6, 3, CHARCOAL, 4)
+box("plate", 34, 38, 582 + E, 464, 4, -4.0, 4, CHARCOAL, 5)
+box("bay", 584 + E, 34, 734 + E, 468, 4, -4.0, 5, ORANGE, 5)
+box("bay_inner", 589 + E, 254, 729 + E, 462, 2, -4.6, 3, CHARCOAL, 4)
 # moulded plastic studs instead of screws
-for (px, py) in ((42, 46), (574, 46), (42, 456), (574, 456), (592, 40), (726, 40), (592, 462), (726, 462)):
+for (px, py) in ((42, 46), (574 + E, 46), (42, 456), (574 + E, 456), (592 + E, 40), (726 + E, 40), (592 + E, 462), (726 + E, 462)):
     bpy.ops.mesh.primitive_uv_sphere_add(radius=3.2, segments=24, ring_count=12)
     o = bpy.context.active_object
     o.scale = (1, 0.45, 1)
-    o.location = (px - 380, -4.6, 245 - py)
+    o.location = (px - W / 2, -4.6, 245 - py)
     o.data.materials.append(IVORY_DARK)
     bpy.ops.object.shade_smooth()
 
@@ -159,7 +161,7 @@ world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.25
 bpy.ops.object.camera_add(location=(0, -1500, 0), rotation=(math.radians(90), 0, 0))
 cam = bpy.context.active_object
 cam.data.type = 'ORTHO'
-cam.data.ortho_scale = 760
+cam.data.ortho_scale = W
 cam.data.clip_end = 5000
 scene.camera = cam
 

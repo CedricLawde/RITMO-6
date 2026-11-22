@@ -172,6 +172,13 @@ impl eframe::App for App {
     }
 }
 
+/// The program's icon (the person's own artwork), shown in the title bar and the task bar.
+fn app_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(include_bytes!("../assets/icon-256.png")).ok()?;
+    let img = img.to_rgba8();
+    Some(egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() })
+}
+
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let shot = args
@@ -198,6 +205,14 @@ fn main() -> eframe::Result<()> {
         .and_then(|i| args.get(i + 1))
         .and_then(|m| ritmo6_core::params::VOICE_LETTERS.iter().position(|l| l.eq_ignore_ascii_case(m)));
 
+    // --fx opens the FX panel at start; --flip <0..1> holds the panel part-way through its turn.
+    let fx_open = args.iter().any(|a| a == "--fx");
+    let flip = args
+        .iter()
+        .position(|a| a == "--flip")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse::<f32>().ok());
+
     let store = Arc::new(Store::new());
     let state = Arc::new(SharedState::default());
     let audio = if shot.is_none() {
@@ -213,9 +228,12 @@ fn main() -> eframe::Result<()> {
     };
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Ritmo-6 — rhythm synth")
+        .with_title(concat!("Ritmo-6 v", env!("CARGO_PKG_VERSION"), " — Geranium"))
         .with_inner_size(size)
         .with_min_inner_size([ui::W * 0.6, ui::H * 0.6]);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(Arc::new(icon));
+    }
     if shot.is_some() {
         viewport = viewport.with_active(false);
         #[cfg(target_os = "windows")]
@@ -243,6 +261,9 @@ fn main() -> eframe::Result<()> {
                 ui: {
                     let mut u = ui::UiState::default();
                     u.open_module = open_module;
+                    u.fx_open = fx_open || flip.is_some();
+                    u.fx_p = if fx_open { 1.0 } else { 0.0 };
+                    u.fx_freeze = flip;
                     u
                 },
                 shot,

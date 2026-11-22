@@ -22,43 +22,46 @@
   .formats { position: absolute; right: 40px; top: 32px; display: flex; gap: 12px; }
   .formats div { border: 2px solid #ef7d2a; color: #f3ead6; border-radius: 22px; padding: 6px 18px;
     font-family: "Bahnschrift"; font-size: 20px; letter-spacing: 2px; }
+  .formats .ver { border-color: #6d665a; color: #cfc6b4; }
 
-  .panel { position: absolute; left: 40px; top: 138px; width: 1140px; height: 735px;
+  .panel { position: absolute; left: 40px; top: 132px; width: 1140px; height: 665px;
     filter: drop-shadow(0 14px 18px rgba(60,40,20,.35)); }
-  .panel img { width: 1140px; height: 735px; display: block; border-radius: 22px; }
+  .panel img { width: 1140px; height: 665px; display: block; border-radius: 22px; }
   .mk { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
     background: #ef7d2a; color: #fff; font-family: "Bahnschrift"; font-weight: 700; font-size: 19px;
     line-height: 34px; text-align: center; border: 3px solid #fff7e8; box-shadow: 0 2px 6px rgba(0,0,0,.45); }
 
-  .legend { position: absolute; left: 1215px; top: 136px; width: 665px; }
-  .legend h2, .box h2 { font-family: "Bahnschrift"; font-size: 23px; letter-spacing: 3px; color: #b8521a;
-    margin-bottom: 8px; }
-  .item { display: flex; gap: 12px; margin-bottom: 7px; font-size: 16.5px; line-height: 21px; }
+  .legend { position: absolute; left: 1210px; top: 130px; width: 675px; }
+  .legend h2, .box h2 { font-family: "Bahnschrift"; font-size: 22px; letter-spacing: 3px; color: #b8521a;
+    margin-bottom: 6px; }
+  .item { display: flex; gap: 11px; margin-bottom: 3px; font-size: 15px; line-height: 19px; }
   .item b { color: #1d1b19; }
-  .num { flex: 0 0 28px; height: 28px; border-radius: 50%; background: #ef7d2a; color: #fff; text-align: center;
-    font-family: "Bahnschrift"; font-weight: 700; line-height: 28px; font-size: 15px; margin-top: -2px; }
+  .num { flex: 0 0 26px; height: 26px; border-radius: 50%; background: #ef7d2a; color: #fff; text-align: center;
+    font-family: "Bahnschrift"; font-weight: 700; line-height: 26px; font-size: 14px; margin-top: -2px; }
 
-  .module { position: absolute; left: 1215px; top: 690px; width: 665px; height: 370px; display: flex; gap: 18px; }
-  .crop { flex: 0 0 120px; height: 354px; overflow: hidden; border-radius: 8px; position: relative;
+  .module { position: absolute; left: 1210px; top: 744px; width: 675px; height: 320px; display: flex; gap: 16px; }
+  .crop { flex: 0 0 112px; height: 316px; overflow: hidden; border-radius: 8px; position: relative;
     box-shadow: 0 8px 14px rgba(60,40,20,.35); }
-  .crop img { position: absolute; width: 1140px * 0; }
-  .knobs { font-size: 15.5px; line-height: 20px; }
-  .knobs h2 { font-family: "Bahnschrift"; font-size: 23px; letter-spacing: 3px; color: #b8521a; margin-bottom: 6px; }
-  .knobs p { margin-bottom: 6px; }
+  .knobs { font-size: 14.5px; line-height: 18.5px; }
+  .knobs h2 { font-family: "Bahnschrift"; font-size: 22px; letter-spacing: 3px; color: #b8521a; margin-bottom: 5px; }
+  .knobs p { margin-bottom: 5px; }
   .tag { display: inline-block; background: #2b2c30; color: #f3ead6; border-radius: 4px; padding: 0 6px;
-    font-family: "Bahnschrift"; font-size: 13.5px; letter-spacing: 1px; margin-right: 4px; }
+    font-family: "Bahnschrift"; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
 
-  .bottom { position: absolute; left: 40px; top: 893px; width: 1140px; height: 170px; display: flex; gap: 18px; }
-  .box { background: rgba(255,250,240,.75); border: 2px solid #d7c6a6; border-radius: 14px; padding: 12px 16px; }
-  .keys { flex: 0 0 470px; }
-  .kb { display: flex; height: 56px; border-radius: 6px; overflow: hidden; border: 2px solid #2b2c30; margin: 6px 0 6px; }
-  .kb div { display: flex; align-items: center; justify-content: center; color: #fff; font-family: "Bahnschrift";
-    font-size: 14px; text-align: center; line-height: 16px; }
-  .k1 { flex: 6; background: #6e6a62; } .k2 { flex: 16; background: #3d6fb4; } .k3 { flex: 14; background: #c4432b; }
-  .small { font-size: 14px; line-height: 18px; color: #4a443c; }
-  .install { flex: 1; font-size: 15px; line-height: 20px; }
-  .tips { flex: 0 0 300px; font-size: 15px; line-height: 20px; }
-  code { font-family: Consolas, monospace; font-size: 13.5px; background: #efe4cd; padding: 0 4px; border-radius: 3px; }
+  .bottom { position: absolute; left: 40px; top: 818px; width: 1140px; height: 246px; display: flex; gap: 16px; }
+  .box { background: rgba(255,250,240,.75); border: 2px solid #d7c6a6; border-radius: 14px; padding: 10px 14px; }
+  .fx { flex: 0 0 600px; display: flex; gap: 14px; }
+  .fxcrop { flex: 0 0 250px; height: 146px; overflow: hidden; position: relative; border-radius: 8px;
+    box-shadow: 0 6px 10px rgba(60,40,20,.3); margin-top: 4px; }
+  .fxcrop img { position: absolute; width: 341px; height: 199px; left: -16px; top: -18px; }
+  .fxtext { font-size: 14px; line-height: 18px; }
+  .keys { flex: 0 0 250px; }
+  .kb { display: flex; flex-direction: column; border-radius: 6px; overflow: hidden; border: 2px solid #2b2c30; margin: 4px 0 6px; }
+  .kb div { color: #fff; font-family: "Bahnschrift"; font-size: 13.5px; padding: 3px 8px; }
+  .k1 { background: #6e6a62; } .k2 { background: #3d6fb4; } .k3 { background: #c4432b; }
+  .small { font-size: 13px; line-height: 17px; color: #4a443c; }
+  .install { flex: 1; font-size: 14px; line-height: 18px; }
+  code { font-family: Consolas, monospace; font-size: 12.5px; background: #efe4cd; padding: 0 4px; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -66,68 +69,81 @@
   <div class="title">RITMO<span>·</span>6</div>
   <div class="brand">GERANIUM</div>
   <div class="sub">Boîte à rythmes analogique 6 voix — mode d'emploi</div>
-  <div class="formats"><div>VST3</div><div>CLAP</div><div>AUTONOME</div></div>
+  <div class="formats"><div class="ver">v1.2.0</div><div>VST3</div><div>CLAP</div><div>AUTONOME</div></div>
 
   <div class="panel">
     <img src="panel.png">
-    <div class="mk" style="left:9%;top:9%">1</div>
-    <div class="mk" style="left:50%;top:21%">2</div>
-    <div class="mk" style="left:28.5%;top:63%">3</div>
-    <div class="mk" style="left:76%;top:9%">4</div>
-    <div class="mk" style="left:58%;top:75%">5</div>
-    <div class="mk" style="left:69%;top:67%">6</div>
-    <div class="mk" style="left:27%;top:79%">7</div>
-    <div class="mk" style="left:5%;top:83%">8</div>
-    <div class="mk" style="left:12.5%;top:63%">9</div>
-    <div class="mk" style="left:79%;top:24%">10</div>
-    <div class="mk" style="left:79%;top:44%">11</div>
-    <div class="mk" style="left:79%;top:73%">12</div>
+    <div class="mk" style="left:8%;top:9%">1</div>
+    <div class="mk" style="left:44.8%;top:21%">2</div>
+    <div class="mk" style="left:26.9%;top:65.5%">3</div>
+    <div class="mk" style="left:68.6%;top:7%">4</div>
+    <div class="mk" style="left:52.5%;top:75%">5</div>
+    <div class="mk" style="left:62.4%;top:67%">6</div>
+    <div class="mk" style="left:24.4%;top:79%">7</div>
+    <div class="mk" style="left:4.5%;top:83%">8</div>
+    <div class="mk" style="left:4.8%;top:67%">9</div>
+    <div class="mk" style="left:81%;top:24%">10</div>
+    <div class="mk" style="left:81%;top:44%">11</div>
+    <div class="mk" style="left:81%;top:73%">12</div>
+    <div class="mk" style="left:34.4%;top:88%">13</div>
+    <div class="mk" style="left:73.9%;top:64%">14</div>
+    <div class="mk" style="left:74.6%;top:78%">15</div>
   </div>
 
   <div class="legend">
     <h2>LA FAÇADE</h2>
     <div class="item"><div class="num">1</div><div><b>Mixeur</b> — curseur de volume, <b>PAN</b>, <b>TRIG</b> (écouter la voix), <b>MUTE</b>, pour chaque voix A à F.</div></div>
     <div class="item"><div class="num">2</div><div><b>Grille 16 pas × 6 voix</b> — cliquez ou glissez pour poser/effacer des pas. La colonne qui s'éclaire suit la lecture.</div></div>
-    <div class="item"><div class="num">3</div><div><b>MULTIPLY</b> — chaque clic sur un pas : 1, 2, 3, 4 coups dans le pas, puis vide. Pas divisés en <b style="color:#2f8f2a">vert</b>, du pâle (2) au vif (4).</div></div>
+    <div class="item"><div class="num">3</div><div><b>MULTIPLY</b> — chaque clic sur un pas : 1, 2, 3, 4 coups dans le pas, puis vide. Pas divisés en <b style="color:#2f8f2a">vert</b>, du pâle (2) au vif (4). Les coups rapprochés saturent, comme sur une 808/909.</div></div>
     <div class="item"><div class="num">4</div><div><b>ONE / ALL</b> — ONE fait jouer seulement cette rangée (solo), ALL les rétablit toutes.</div></div>
     <div class="item"><div class="num">5</div><div><b>PROGRAM</b> — 16 motifs. <b>STEPS</b> — longueur du motif, de 1 à 16 pas.</div></div>
     <div class="item"><div class="num">6</div><div><b>RESET · COPY · PASTE · RANDOM</b> — vider, copier, coller ou tirer au sort le motif courant.</div></div>
     <div class="item"><div class="num">7</div><div><b>TEMPO</b> 1–10 en <b>INTER</b> ; en <b>MIDI</b> il suit votre logiciel et devient diviseur (1/8, 1/8T, 1/16, 1/32).</div></div>
     <div class="item"><div class="num">8</div><div><b>STOP / START</b> (barre d'espace en autonome) et <b>KEYB CTRL</b> : piloter programmes et lecture au clavier MIDI.</div></div>
     <div class="item"><div class="num">9</div><div><b>SOUND</b> — <b>MINI</b> : le son punchy façon Minipops ; <b>ORIG</b> : le modèle du plugin d'origine.</div></div>
-    <div class="item"><div class="num">10</div><div><b>KIT</b> — MINI + 16 kits d'usine (◀ ▶). <b>LOAD / SAVE</b> : banque complète (motifs + sons).</div></div>
+    <div class="item"><div class="num">10</div><div><b>KIT</b> — MINI + 16 kits d'usine (◀ ▶). <b>LOAD / SAVE</b> : banque complète (motifs, sons, effets).</div></div>
     <div class="item"><div class="num">11</div><div><b>MIDI CHANNEL</b> — All ou canal 1 à 16.</div></div>
-    <div class="item"><div class="num">12</div><div><b>Modules A01 à F06</b> — cliquez pour ouvrir l'éditeur de son de la voix.</div></div>
+    <div class="item"><div class="num">12</div><div><b>Modules A01 à F06</b> — cliquez pour ouvrir l'éditeur de son. <b>TUNE</b> et sa note (clic = accord juste), puis les 4 petits boutons <b>PH · DS · DL · SP</b> envoient la voix vers les effets.</div></div>
+    <div class="item"><div class="num">13</div><div><b>TEMPO DRIFT</b> — 50 % : stable ; vers 0 % les pas traînent au hasard, vers 100 % ils devancent. <b>SOUND DRIFT</b> — chaque coup sonne un peu différemment. <b>SWING</b> — de 50 % (droit) à 75 % : les pas pairs reculent.</div></div>
+    <div class="item"><div class="num">14</div><div><b>NUDGE</b> — avance ou retarde une voix jusqu'à ½ pas (des claps juste avant la caisse claire : le groove disco). <b>DRIFT</b> — la part de SOUND DRIFT que reçoit cette voix.</div></div>
+    <div class="item"><div class="num">15</div><div><b>FX</b> — la façade bascule sur sa charnière et montre, au dos, le panneau d'effets.</div></div>
   </div>
 
   <div class="module">
-    <div class="crop"><img src="module.png" style="width:627px;height:404px;left:-483px;top:-30px;position:absolute;"></div>
+    <div class="crop"><img src="module.png" style="width:693px;height:404px;left:-549px;top:-30px;position:absolute;"></div>
     <div class="knobs">
       <h2>LE MODULE DE SON</h2>
-      <p><span class="tag">TONE OSC</span><b>TUNE</b> hauteur · <b>DECAY</b> durée · <b>VOLUME</b> · <b>P.DECAY / P.DEPTH</b> chute de hauteur (le « pew » des toms et grosses caisses) · <b>PM RATE / PM LEV</b> forme et métal du son.</p>
-      <p><span class="tag">NOISE</span><b>VOLUME · DECAY</b> du bruit · <b>FREQ · RESO · F.DECAY</b> du filtre · interrupteur <b>LP / HP</b> (grave / aigu).</p>
-      <p><span class="tag">PAN RND</span>panoramique aléatoire à chaque coup, plus large quand on tourne.</p>
-      <p><span class="tag">RAND</span>son au hasard · <span class="tag">LOAD / SAVE</span>un son seul · <span class="tag">TRIG</span>écouter · <span class="tag">CLOSE</span></p>
-      <p class="small">Astuces boutons : glisser haut/bas · <b>Maj</b> = réglage fin · molette · <b>double-clic</b> = valeur d'origine. Survolez pour lire la valeur (Hz, ms).</p>
+      <p><span class="tag">TONE OSC</span><b>TUNE</b> hauteur (la note s'affiche à droite ; un clic l'accorde juste) · <b>DECAY</b> durée · <b>VOLUME</b> · <b>P.DECAY / P.DEPTH</b> chute de hauteur (le « pew » des toms et grosses caisses) · <b>PM RATE / PM LEV</b> forme et métal du son.</p>
+      <p><span class="tag">NOISE</span><b>VOLUME · DECAY</b> du bruit · <b>FREQ · RESO · F.DECAY</b> du filtre · interrupteur <b>LP / HP</b>.</p>
+      <p><span class="tag">PAN RND</span>panoramique aléatoire à chaque coup.</p>
+      <p><span class="tag">RAND</span>son au hasard · <span class="tag">LOAD / SAVE</span>un son seul · <span class="tag">TRIG</span> · <span class="tag">CLOSE</span></p>
+      <p class="small">Boutons : glisser haut/bas · <b>Maj</b> = fin · molette · <b>double-clic</b> = valeur d'origine. Survolez pour lire la valeur.</p>
     </div>
   </div>
 
   <div class="bottom">
+    <div class="box fx">
+      <div class="fxcrop"><img src="fx.png"></div>
+      <div class="fxtext">
+        <h2>LE PANNEAU FX</h2>
+        <b>PHASER</b> 4 étages (RATE, DEPTH, COLOR) · <b>DISTORTION</b> à ampli-op (DRIVE, FILTER, FAT) ·
+        <b>DELAY</b> <b>TAPE</b>, <b>BBD</b> ou <b>MOD</b>, en <b>SYNC</b> (valeurs de note) ou <b>FREE</b> (ms) ·
+        <b>SPRING REVERB</b> à 3 ressorts, et <b>KICK</b> pour cogner la cuve.<br>
+        Chaque effet a son <b>BYPASS</b> et son niveau. Montez les envois <b>PH DS DL SP</b> de chaque voix (12) ;
+        cliquez <b>FX</b> pour revenir à la façade.
+      </div>
+    </div>
     <div class="box keys">
       <h2>CLAVIER MIDI</h2>
-      <div class="kb"><div class="k1">36–41<br>VOIX A–F</div><div class="k2">42–57<br>PROGRAMMES 1–16</div><div class="k3">58 et plus<br>MAINTENIR = LECTURE</div></div>
-      <div class="small">Note 36 = Do1 ou Do3 selon le logiciel. Programmes et lecture : KEYB CTRL allumé.</div>
+      <div class="kb"><div class="k1">36–41 · voix A–F</div><div class="k2">42–57 · programmes 1–16</div><div class="k3">58 et plus · maintenir = lecture</div></div>
+      <div class="small">Programmes et lecture : KEYB CTRL allumé.</div>
     </div>
     <div class="box install">
       <h2>INSTALLATION</h2>
       Copiez <b>Ritmo-6.vst3</b> dans <code>C:\Program Files\Common Files\VST3</code>,
       puis relancez la recherche de plugins : il apparaît sous la marque <b>Geranium</b>.<br>
-      <span class="small">Aussi : <b>Ritmo-6.clap</b> et la version autonome <b>Ritmo-6.exe</b>.</span>
-    </div>
-    <div class="box tips">
-      <h2>ASTUCES</h2>
-      Commencez par le <b>KIT MINI</b> et le programme 1, puis jouez avec <b>MULTIPLY</b> sur les charlestons
-      et <b>PAN RND</b> sur les percussions.<br><span class="small">6 sorties séparées (A à F) + mix stéréo.</span>
+      <span class="small">Aussi : <b>Ritmo-6.clap</b> et l'appli autonome <b>Ritmo-6.exe</b>.
+      6 sorties séparées A–F (sèches, sans effets) + mix stéréo avec effets. <b>Fenêtre agrandissable</b> : tirez le coin en bas à droite.</span>
     </div>
   </div>
 </body>
