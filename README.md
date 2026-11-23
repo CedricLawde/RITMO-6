@@ -11,7 +11,11 @@
 - 6 synthesized voices (tone oscillator with pitch sweep + filtered noise), each with its own sound module, RAND, LOAD/SAVE
 - Two sound engines: **MINI** (punchy, Minipops-style) and **ORIG**
 - 16-step × 6-row sequencer, 16 programs, pattern length 1–16, RESET / COPY / PASTE / RANDOM
+- **PAD MODE** (v2): a click on a step can switch it (NOTE), split it (MULTI), accent it (ACCENT), set its chance (PROB) or end the voice's loop (LENGTH)
 - **MULTIPLY**: 1, 2, 3 or 4 hits inside a step (ratchets), shown in green
+- **ACCENT** (v2): accented steps (red bar) play louder and a little hotter; one ACCENT knob, up to +4 dB
+- **PROBABILITY** (v2): 100, 75, 50 or 25 % chance per step, drawn on every pass; the pad is lit up to its chance
+- **Per-voice length / polymetry** (v2): each voice loops over its own 1-16 steps; the STEPS row sets them all
 - **PAN RND**: random panning per hit
 - Mixer with volume, pan, trig, mute, solo (ONE/ALL); stereo mix + 6 separate outputs
 - Internal tempo or host sync (1/8, 1/8T, 1/16, 1/32); MIDI keyboard control
@@ -28,6 +32,10 @@ Download the latest files from the **Releases** page:
 Then rescan plugins in your DAW. The plugin appears under the vendor **Geranium**.
 
 MIDI: notes 36–41 = voices A–F · 42–57 = programs 1–16 · 58+ = hold to play.
+
+Upgrading from 1.x: v2 keeps the same plugin ID and parameter names, so it replaces 1.x in your DAW
+and your projects, banks (.json), pattern files (.r6p) and pattern sets (.r6s) open unchanged (no accent, 100 % chance,
+one length per program). Files saved by v2 carry the new data; v1 ignores it.
 
 ## Build from source
 Requires Rust (stable). On Windows:

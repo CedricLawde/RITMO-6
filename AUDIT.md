@@ -1,3 +1,34 @@
+# Ritmo-6 v2.0.0 (2026-11-23) — probability, accent, per-voice length
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| PAD MODE replaces the MULTIPLY switch | Red display with arrows under the grid: NOTE, MULTI, ACCENT, PROB, LENGTH. A click on the display steps to the next mode. v1 banks saved with MULTIPLY on open in MULTI. | test `v1_files_still_load`; screenshot |
+| ACCENT | One bit per step (red bar on the pad). An accented hit plays x(1 + 0.6 x ACCENT) (up to +4 dB) and adds up to 0.5 extra unit of retrigger charge, so it warms a little on its own and pushes rolls further into the saturation of v1.3.4. New automatable parameter `accent` (default 50 %), placed last so v1 parameter numbering is kept. | test `accent_plays_louder` |
+| PROB | 2 bits per step: 100 / 75 / 50 / 25 %. Drawn once per step and voice when the step is reached (when it is queued, for an early-NUDGE voice); a lost draw silences the whole step, MULTIPLY hits included. Clearing a step resets its chance and accent. The pad is lit only up to its chance. | test `probability_thins_out_a_step` (800 steps: 100 % -> 800, 50 % -> 330-470, 25 % -> 140-260) |
+| Per-voice length (polymetry) | Each voice has its own loop of 1-16 steps and its own cursor; LENGTH mode sets one voice, the STEPS row sets all of them. The program length (step numbers, STEPS row) follows the longest voice. Internal clock: each voice advances by one step; host sync: each voice's step is the host step modulo its length, so it stays in place after a jump or loop. | tests `each_voice_loops_over_its_own_length`, `host_sync_places_each_voice_in_its_own_loop` |
+| Files | Banks and pattern files gain `accent`, `prob`, `voice_lengths`, `pad_mode` (all optional). v1 files load with no accent, 100 % and one length per program. COPY / PASTE PRG carry the new data. | tests `v1_files_still_load`, `v2_fields_round_trip` |
+| Factory program 1 demo | Accent on A1, steps E7 (50 %) and E11 (75 %), row D on a 12-step loop (steps 1, 4, 7, 10). | screenshot |
+
+Not yet checked: listening in a host by the person. Manuals (HTML and PNG, FR and EN) redrawn with the v2 panel.
+
+---
+
+# Ritmo-6 v1.3.5 (2026-11-23) — crash on LOAD / SAVE in the plugin
+
+| Finding | Fix | Verified by |
+|---|---|---|
+| Clicking LOAD or SAVE (bank or module) in the plugin crashed the host with 0xc0000409 (fail-fast) in Reaper, Cubase, VSTHost and Ableton Live. The Windows file dialog was opened from inside the plugin window's frame; its modal message loop called back into the window code that was still drawing, which stopped the process. Ableton's log of the reported crash shows v1.3.1 loaded, before this fix. | File dialogs now run on their own thread; the bank or module text is prepared before (SAVE) or applied after (LOAD) on the GUI thread, picked up on a later frame. Only one file window at a time. The plugin's panel drawing is also wrapped so a panic skips a frame instead of aborting the host. | test `file_jobs_finish_off_the_gui_thread`; build. Not yet confirmed in a host by the person. |
+
+---
+
+# Ritmo-6 v1.3.4 (2026-11-23) — retrigger saturation
+
+| Finding | Fix | Verified by |
+|---|---|---|
+| Saturation came only from MULTIPLY hits and switched fully on at the 2nd hit of a step (charge 1 -> ~2, blend 100 %); normal steps reset the charge, however fast. | Every hit adds one unit of charge to what is left; it leaks with a fifth of the voice's decay (15-300 ms); only the excess over 1 drives a faded-in soft overload into a knee-based ceiling (clean to 0.9, rounding to 1.6), so the level only rises. Documented in SATURATION.md. | test `multiply_hits_saturate`: kick, 4th-hit peak / lone hit = 1.00 (1 s, 250 ms), 1.08 (125 ms), 1.23 (60 ms), 1.57 (30 ms), 1.63 (15 ms) |
+
+---
+
 # Ritmo-6 v1.3.3 (2026-11-23)
 
 | Change | Behaviour | Verified by |
