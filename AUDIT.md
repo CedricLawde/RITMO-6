@@ -1,3 +1,11 @@
+# Ritmo-6 v1.3.3 (2026-11-23)
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| No console window | The standalone is built as a Windows GUI program (`windows_subsystem = "windows"`), so no black console window opens behind the panel. The plugin is unaffected. | PE header subsystem = 2 (Windows GUI); screenshot run |
+
+---
+
 # Ritmo-6 v1.3.2 (2026-11-23) — phaser analysis
 
 | Finding | Fix | Verified by |
