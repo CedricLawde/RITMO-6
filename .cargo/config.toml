@@ -1,0 +1,4 @@
+# Link the Microsoft C runtime statically so the VST3/CLAP and the app need no
+# Visual C++ redistributable on the computer that loads them.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

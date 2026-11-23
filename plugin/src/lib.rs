@@ -298,6 +298,8 @@ pub struct RitmoParams {
     pub sound_drift: FloatParam,
     #[id = "swing"]
     pub swing: FloatParam,
+    #[id = "accent"]
+    pub accent: FloatParam,
     #[nested(group = "FX")]
     pub fx: FxParams,
 }
@@ -321,6 +323,7 @@ impl RitmoParams {
             tempo_drift: fparam(ParamId::TempoDrift),
             sound_drift: fparam(ParamId::SoundDrift),
             swing: fparam(ParamId::Swing),
+            accent: fparam(ParamId::Accent),
             fx: FxParams::new(),
         }
     }
@@ -338,6 +341,7 @@ impl RitmoParams {
             ParamId::TempoDrift => F(&self.tempo_drift),
             ParamId::SoundDrift => F(&self.sound_drift),
             ParamId::Swing => F(&self.swing),
+            ParamId::Accent => F(&self.accent),
             ParamId::Send(c, k) => {
                 let ch = &self.ch[c];
                 F([&ch.send_phaser, &ch.send_dist, &ch.send_delay, &ch.send_spring][k.min(3)])
@@ -479,9 +483,16 @@ impl Plugin for Ritmo6 {
                 let access = Access { p: &params, s: setter };
                 // resizable like the standalone (HiDPI screens, bigger panel): drag the corner at the
                 // bottom right; the panel scales to fit and the host keeps the size with the project
-                ResizableWindow::new("ritmo6-window")
-                    .min_size(egui::vec2(ui::W * 0.6, ui::H * 0.6))
-                    .show(ctx, &editor_state, |ui| ui::draw_in(ui, &access, &state, st));
+                // a panic here would cross the host's window code and abort the whole host:
+                // catch it, so at worst the panel skips a frame
+                let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    ResizableWindow::new("ritmo6-window")
+                        .min_size(egui::vec2(ui::W * 0.6, ui::H * 0.6))
+                        .show(ctx, &editor_state, |ui| ui::draw_in(ui, &access, &state, st));
+                }));
+                if drawn.is_err() {
+                    nih_log!("Ritmo-6: the panel hit an error and skipped a frame");
+                }
             },
         )
     }
