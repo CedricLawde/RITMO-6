@@ -124,15 +124,32 @@ pub struct Voice {
     /// Pan offset in volts drawn at the last hit (Pan Random).
     pub pan_offset: f32,
     classic: Classic,
-    /// MULTIPLY saturation: a "capacitor" charged by each hit and slowly discharged.
-    /// A normal hit sets it to 1; each extra hit inside a step adds 1 more, and the excess
-    /// over 1 drives the voice into saturation (like an 808/909 retriggered too fast).
+    /// Retrigger overload, as on the TR-808 / TR-909 (see SATURATION.md): every hit adds one
+    /// unit of charge on top of what is left from the previous hits, and the charge leaks away
+    /// with a time constant tied to the voice's own decay. An isolated hit leaves 1 (clean);
+    /// hits that come back before the voice has died down pile up, and only the excess over 1
+    /// drives a soft saturation, so it grows gradually with how fast and how long the hits are.
     charge: f32,
     /// SOUND DRIFT offsets drawn at the last hit.
     drift_pitch_v: f32,
     drift_decay_v: f32,
     drift_cutoff_v: f32,
     drift_gain: f32,
+    /// ACCENT: level of the current hit (1 = plain step).
+    accent_gain: f32,
+}
+
+/// The output stage's soft ceiling: untouched up to 0.9, then rounding off towards 1.6.
+#[inline]
+fn overload_clip(u: f32) -> f32 {
+    const KNEE: f32 = 0.9;
+    const ROOM: f32 = 0.7;
+    let m = u.abs();
+    if m <= KNEE {
+        u
+    } else {
+        (KNEE + ROOM * ((m - KNEE) / ROOM).tanh()).copysign(u)
+    }
 }
 
 impl Voice {
@@ -153,6 +170,7 @@ impl Voice {
             drift_decay_v: 0.0,
             drift_cutoff_v: 0.0,
             drift_gain: 1.0,
+            accent_gain: 1.0,
         }
     }
 
@@ -160,8 +178,12 @@ impl Voice {
     /// - `pan_random` 0..1 widens a random pan offset (up to +-5 V).
     /// - `sound_drift` 0..1: random pitch (up to +-1.4 semitones), decay (+-0.5 V, about x/1.4),
     ///   cutoff (+-0.6 V) and level (+-25 %) for this hit.
-    /// - `stacked`: an extra MULTIPLY hit inside a step; it adds charge instead of resetting it.
-    pub fn strike(&mut self, pan_random: f32, sound_drift: f32, stacked: bool) {
+    /// - `stacked`: an extra MULTIPLY hit inside a step. Every hit adds charge the same way
+    ///   (quick normal steps too); only the timing decides how much is left.
+    /// - `accent` 0..1: 0 for a plain hit; for an accented step, the ACCENT knob. The hit plays
+    ///   up to 1.6x louder (+4 dB) and adds up to half a unit of extra charge, so an accent
+    ///   warms the sound a little on its own and pushes a fast roll further into saturation.
+    pub fn strike(&mut self, pan_random: f32, sound_drift: f32, stacked: bool, accent: f32) {
         self.trigger(pan_random);
         let d = sound_drift.clamp(0.0, 1.0);
         if d > 0.0 {
@@ -175,7 +197,10 @@ impl Voice {
             self.drift_cutoff_v = 0.0;
             self.drift_gain = 1.0;
         }
-        self.charge = if stacked { self.charge + 1.0 } else { 1.0 };
+        let _ = stacked;
+        let a = accent.clamp(0.0, 1.0);
+        self.accent_gain = crate::params::accent_gain(a);
+        self.charge = (self.charge + 1.0 + 0.5 * a).min(8.0);
     }
 
     /// Render one sample with SOUND DRIFT and MULTIPLY saturation applied around the engine.
@@ -188,21 +213,27 @@ impl Voice {
             d.noise_decay += self.drift_decay_v;
             d.filter_freq += self.drift_cutoff_v;
         }
-        let raw = self.render_engine(&d, sr, classic) * self.drift_gain;
+        let raw = self.render_engine(&d, sr, classic) * self.drift_gain * self.accent_gain;
 
-        // capacitor discharge: faster for short sounds (20..400 ms time constant)
-        if self.charge > 0.0 {
-            let tau = (env_seconds(s.tone_decay.max(s.noise_decay)) * 0.4).clamp(0.02, 0.4);
+        // leak: a fifth of the voice's decay time (15..300 ms), so a short hat recovers in a
+        // few milliseconds and a long kick keeps some charge for a whole 16th note
+        if self.charge > 1e-4 {
+            let tau = (env_seconds(s.tone_decay.max(s.noise_decay)) * 0.2).clamp(0.015, 0.3);
             self.charge *= (-1.0 / (tau * sr)).exp();
+        } else {
+            self.charge = 0.0;
         }
+        // only charge above one hit's worth overloads; nothing happens below it
         let heat = (self.charge - 1.0).max(0.0);
-        if heat <= 0.0 {
+        if heat <= 1e-4 {
             return raw;
         }
-        let mix = heat.min(1.0);
-        let x = raw * (1.0 + 0.5 * heat);
-        let sat = (x * (1.0 + 2.0 * heat)).tanh();
-        raw + (sat - raw) * mix
+        // the piled-up energy pushes the voice into the output stage's soft ceiling (about 1.0):
+        // more drive (level and odd harmonics) as the heat rises, faded in smoothly from zero so
+        // a little overlap only warms the sound and a fast roll really crunches
+        let w = 1.0 - (-2.0 * heat).exp();
+        let g = 1.0 + 0.6 * heat.min(4.0);
+        raw + w * (overload_clip(g * raw) - raw)
     }
 
     #[inline]

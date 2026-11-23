@@ -1,3 +1,6 @@
+// A windowed program on Windows: no black console window opens behind the panel.
+#![windows_subsystem = "windows"]
+
 //! Ritmo-6 standalone: the same panel and sound engine as the VST3, playing through the
 //! default audio output, with MIDI input from the first MIDI port found.
 

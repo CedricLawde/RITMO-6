@@ -73,6 +73,9 @@ pub enum ParamId {
     SoundDrift,
     /// Global swing: every second step is delayed by up to half a step (0..1).
     Swing,
+    /// ACCENT: how much louder (and hotter) an accented step plays (0..1). Added in v2, so it
+    /// comes last in the parameter list and older projects keep their numbering.
+    Accent,
     Voice(usize, VoiceParam),
     /// FX send of voice `c` to bus `k` (0 PHASER, 1 DIST, 2 DELAY, 3 SPRING), 0..1.
     Send(usize, usize),
@@ -214,7 +217,7 @@ pub fn fx_level_gain(v: f32) -> f32 {
 
 pub const DELAY_MODE_NAMES: [&str; 3] = ["TAPE", "BBD", "MOD"];
 
-pub const NUM_PARAMS: usize = 25 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS;
+pub const NUM_PARAMS: usize = 26 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS;
 
 impl ParamId {
     pub fn index(self) -> usize {
@@ -232,6 +235,7 @@ impl ParamId {
             ParamId::Voice(c, p) => 25 + c * VOICE_PARAMS.len() + p.index(),
             ParamId::Send(c, k) => 25 + NUM_CH * VOICE_PARAMS.len() + c * NUM_FX_BUSES + k,
             ParamId::Fx(p) => 25 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + p.index(),
+            ParamId::Accent => 25 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS,
         }
     }
 
@@ -266,6 +270,7 @@ impl ParamId {
         for p in FX_PARAMS {
             v.push(ParamId::Fx(p));
         }
+        v.push(ParamId::Accent);
         v
     }
 
@@ -302,6 +307,7 @@ pub enum Show {
     Nudge,
     /// 0..1 = straight .. 75 % swing.
     Swing,
+    Accent,
     PhaserHz,
     LowCut,
     HighCut,
@@ -377,6 +383,7 @@ impl Spec {
                     format!("Late {pct:.0}% of a step")
                 }
             }
+            Show::Accent => format!("+{:.1} dB", 20.0 * (accent_gain(plain)).log10()),
             Show::Swing => {
                 if plain < 0.005 {
                     "Straight (50%)".to_string()
@@ -640,6 +647,16 @@ pub fn spec(id: ParamId) -> Spec {
             curve: Curve::Linear,
             show: Show::Percent,
         },
+        // +4 dB and a little retrigger heat at 100 %; 50 % by default
+        ParamId::Accent => Spec {
+            name: "Accent",
+            short: "ACCENT",
+            min: 0.0,
+            max: 1.0,
+            default: 0.5,
+            curve: Curve::Linear,
+            show: Show::Accent,
+        },
         ParamId::Swing => Spec {
             name: "Swing",
             short: "SWING",
@@ -677,9 +694,9 @@ pub fn fx_spec(p: FxParam) -> Spec {
     use FxParam::*;
     match p {
         PhRate => knob("Phaser Rate", "RATE", 0.4, Show::PhaserHz),
-        PhDepth => knob("Phaser Depth", "DEPTH", 0.7, Show::Percent),
-        PhColor => knob("Phaser Color", "COLOR", 0.4, Show::Percent),
-        PhMix => knob("Phaser Mix", "MIX", 0.5, Show::Percent),
+        PhDepth => knob("Phaser Depth", "DEPTH", 0.75, Show::Percent),
+        PhColor => knob("Phaser Color", "COLOR", 0.45, Show::Percent),
+        PhMix => knob("Phaser Mix", "MIX", 1.0, Show::Percent),
         PhLevel => knob("Phaser Level", "LEVEL", 0.707, Show::FxLevel),
         PhBypass => toggle("Phaser Bypass", "BYPASS", 0.0, Show::Bypass),
         DsDrive => knob("Distortion Drive", "DRIVE", 0.5, Show::Percent),
@@ -753,4 +770,9 @@ mod note_tests {
         assert_eq!((n.as_str(), c), ("A1", 3));
         assert!((snap_to_note(2.02) - 2.0).abs() < 1e-6);
     }
+}
+
+/// Level of an accented hit for the ACCENT knob (0..1): x1 to x1.6 (+4 dB).
+pub fn accent_gain(knob: f32) -> f32 {
+    1.0 + 0.6 * knob.clamp(0.0, 1.0)
 }

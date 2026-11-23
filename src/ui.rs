@@ -7,7 +7,7 @@ use crate::params::{
     FILTER_HP_THRESHOLD, FX_BUS_NAMES, FX_BUS_SHORT, NUM_CH, NUM_FX_BUSES, NUM_KIT_CHOICES, NUM_STEPS,
     SYNC_NAMES, VOICE_LETTERS,
 };
-use crate::state::SharedState;
+use crate::state::{SharedState, NUM_PAD_MODES, PAD_ACCENT, PAD_LENGTH, PAD_MODE_NAMES, PAD_MULTI, PAD_NOTE, PAD_PROB};
 use egui::{pos2, vec2, Align2, Color32, FontId, Id, Pos2, Rect, Response, Sense, Shape, Stroke};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -34,7 +34,7 @@ const GREEN_HI: Color32 = Color32::from_rgb(110, 240, 100);
 pub struct UiState {
     pub open_module: Option<usize>,
     paint: Option<bool>,
-    clipboard: Option<([u16; NUM_CH], [u32; NUM_CH], u8)>,
+    clipboard: Option<bank::ProgramPattern>,
     seen_hits: [u32; NUM_CH],
     lamp_time: [f64; NUM_CH],
     message: String,
@@ -51,6 +51,8 @@ pub struct UiState {
     last_step: i32,
     step_time: f64,
     kick_time: f64,
+    /// A LOAD / SAVE file dialog running on its own thread (see bank.rs).
+    dialog: Option<bank::DialogTask>,
 }
 
 impl Default for UiState {
@@ -77,6 +79,7 @@ impl Default for UiState {
             last_step: -1,
             step_time: -10.0,
             kick_time: -10.0,
+            dialog: None,
         }
     }
 }
@@ -177,6 +180,7 @@ pub fn draw_in(ui: &mut egui::Ui, access: &dyn ParamAccess, state: &SharedState,
         ctx.data_mut(|d| d.insert_temp(marker, true));
     }
     ui.painter().rect_filled(ui.max_rect(), 0.0, BG);
+    poll_dialog(st, access, state, ctx.input(|i| i.time));
     {
         {
             let avail = ui.max_rect();
@@ -245,6 +249,31 @@ pub fn draw_in(ui: &mut egui::Ui, access: &dyn ParamAccess, state: &SharedState,
         }
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
+}
+
+/// Open a file dialog on its own thread, one at a time (a second click while one is open does nothing).
+fn start_dialog(st: &mut UiState, now: f64, open: impl FnOnce() -> bank::DialogTask) {
+    if st.dialog.is_some() {
+        say(st, Some("A file window is already open".into()), now);
+        return;
+    }
+    st.dialog = Some(open());
+}
+
+/// Pick up a finished file dialog and apply it here, on the GUI thread.
+fn poll_dialog(st: &mut UiState, access: &dyn ParamAccess, state: &SharedState, now: f64) {
+    let Some(task) = &st.dialog else { return };
+    let finished = match task.try_lock() {
+        Ok(mut slot) => slot.take(),
+        Err(_) => None,
+    };
+    if let Some(result) = finished {
+        st.dialog = None;
+        if let Some(done) = result {
+            let m = bank::finish_dialog(done, access, state);
+            say(st, Some(m), now);
+        }
+    }
 }
 
 fn say(st: &mut UiState, msg: Option<String>, now: f64) {
@@ -794,7 +823,7 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
         {
             access.set_gesture(ParamId::Mute(ch), if muted { 0.0 } else { 1.0 });
         }
-        draw_row(ui, g, state, st, prog, ch, len, cur);
+        draw_row(ui, g, state, st, prog, ch);
         // A: NUDGE (up to half a step early or late), B: this voice's share of SOUND DRIFT
         knob(ui, g, access, ParamId::Voice(ch, VoiceParam::Nudge), 604.0, y, 9.0);
         knob(ui, g, access, ParamId::Voice(ch, VoiceParam::DriftAmount), 638.0, y, 9.0);
@@ -878,17 +907,11 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
     text(ui, g, 330.0, 451.0, "SOUND DRIFT", 7.5, INK);
     knob(ui, g, access, ParamId::Swing, 412.0, 431.0, 10.0);
     text(ui, g, 412.0, 451.0, "SWING", 7.5, INK);
+    knob(ui, g, access, ParamId::Accent, 494.0, 431.0, 10.0)
+        .on_hover_text(format!("ACCENT: how much louder and hotter the accented steps play ({})", spec(ParamId::Accent).format(access.get(ParamId::Accent))));
+    text(ui, g, 494.0, 451.0, "ACCENT", 7.5, INK);
 
-    // MULTIPLY mode selector (requested addition)
-    let mult = state.multiply_mode.load(Relaxed);
-    text(ui, g, 196.0, 321.0, "MULTIPLY", 7.5, if mult { GREEN_HI } else { INK });
-    if toggle_switch(ui, g, Id::new("multiply"), 196.0, 334.0, mult)
-        .on_hover_text("MULTIPLY: each click on a pad gives 1, 2, 3, 4 hits inside the step, then off")
-        .clicked()
-    {
-        state.multiply_mode.store(!mult, Relaxed);
-    }
-    ui.painter().circle_filled(g.p(216.0, 334.0), g.l(2.5), if mult { GREEN_HI } else { Color32::from_rgb(20, 50, 22) });
+    pad_mode_selector(ui, g, state);
 
     // tempo knob with its 1..10 V scale
     let (tx, ty) = (170.0, 384.0);
@@ -937,10 +960,10 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
             None
         };
         if round_button(ui, g, Id::new(("len", i)), col_x(i), 384.0, 6.5, lit)
-            .on_hover_text(format!("Pattern length: {} steps", i + 1))
+            .on_hover_text(format!("Pattern length: {} steps, for every voice (LENGTH mode sets one voice)", i + 1))
             .clicked()
         {
-            state.lengths[prog].store(i as u8 + 1, Relaxed);
+            state.set_length(prog, i + 1);
         }
     }
     text(ui, g, 376.0, 400.0, "STEPS", 8.5, INK);
@@ -959,26 +982,16 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
         if r.clicked() {
             match k {
                 0 => {
-                    for c in 0..NUM_CH {
-                        state.steps[prog][c].store(0, Relaxed);
-                        state.multi[prog][c].store(0, Relaxed);
-                    }
-                    state.lengths[prog].store(16, Relaxed);
+                    state.clear_program(prog);
                     say(st, Some(format!("Program {} cleared", prog + 1)), now);
                 }
                 1 => {
-                    let rows = std::array::from_fn(|c| state.steps[prog][c].load(Relaxed));
-                    let multi = std::array::from_fn(|c| state.multi[prog][c].load(Relaxed));
-                    st.clipboard = Some((rows, multi, len as u8));
+                    st.clipboard = Some(bank::read_program(state, prog));
                     say(st, Some(format!("Program {} copied", prog + 1)), now);
                 }
                 2 => {
-                    if let Some((rows, multi, l)) = st.clipboard {
-                        for c in 0..NUM_CH {
-                            state.steps[prog][c].store(rows[c], Relaxed);
-                            state.multi[prog][c].store(multi[c], Relaxed);
-                        }
-                        state.lengths[prog].store(l, Relaxed);
+                    if let Some(p) = st.clipboard {
+                        bank::write_program(state, prog, &p);
                         say(st, Some(format!("Pasted into program {}", prog + 1)), now);
                     } else {
                         say(st, Some("Copy a program first".into()), now);
@@ -1009,19 +1022,55 @@ fn randomize_program(state: &SharedState, st: &mut UiState, prog: usize) {
         }
         state.steps[prog][c].store(m, Relaxed);
         state.multi[prog][c].store(0, Relaxed);
+        state.accent[prog][c].store(0, Relaxed);
+        state.prob[prog][c].store(0, Relaxed);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_row(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, prog: usize, ch: usize, len: usize, cur: i32) {
+/// PAD MODE: what a click on a pad does. A small red display with arrows (like the kit and MIDI
+/// displays); a click on the display itself also steps to the next mode.
+fn pad_mode_selector(ui: &mut egui::Ui, g: G, state: &SharedState) {
+    let mode = state.pad_mode.load(Relaxed).min(NUM_PAD_MODES - 1);
+    let hint = [
+        "NOTE: click or drag to switch steps on and off",
+        "MULTI: each click gives 1, 2, 3, 4 hits inside the step, then off",
+        "ACCENT: click to accent a step (red bar); the ACCENT knob sets how strong",
+        "PROB: each click sets the chance of the step: 100, 75, 50, 25 %",
+        "LENGTH: click a voice's last step to give it its own loop length",
+    ][mode as usize];
+    text(ui, g, 200.0, 321.0, "PAD MODE", 7.5, INK);
+    let lcd = g.r(182.0, 327.0, 218.0, 341.0);
+    ui.painter().rect_filled(lcd, g.l(2.0), Color32::from_rgb(30, 4, 4));
+    text(ui, g, 200.0, 334.0, PAD_MODE_NAMES[mode as usize], 7.5, RED_LED);
+    let tri = |x: f32, dir: f32| vec![g.p(x - 3.5 * dir, 334.0), g.p(x + 3.5 * dir, 330.0), g.p(x + 3.5 * dir, 338.0)];
+    ui.painter().add(Shape::convex_polygon(tri(176.0, 1.0), INK, Stroke::NONE));
+    ui.painter().add(Shape::convex_polygon(tri(224.0, -1.0).into_iter().rev().collect(), INK, Stroke::NONE));
+    let dn = ui.interact(g.r(169.0, 327.0, 181.0, 341.0), Id::new("pad_dn"), g.sense(Sense::click()));
+    let up = ui.interact(g.r(219.0, 327.0, 231.0, 341.0), Id::new("pad_up"), g.sense(Sense::click()));
+    let mid = ui.interact(lcd, Id::new("pad_lcd"), g.sense(Sense::click()));
+    let n = NUM_PAD_MODES;
+    if dn.on_hover_text(hint).clicked() {
+        state.pad_mode.store((mode + n - 1) % n, Relaxed);
+    } else if up.on_hover_text(hint).clicked() || mid.on_hover_text(hint).clicked() {
+        state.pad_mode.store((mode + 1) % n, Relaxed);
+    }
+}
+
+fn draw_row(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, prog: usize, ch: usize) {
     let y = row_y(ch);
+    let len = state.voice_length(prog, ch);
+    let cur = state.voice_step[ch].load(Relaxed) as i32;
+    let mode = state.pad_mode.load(Relaxed);
     let bar = g.r(GRID_X0 - 3.0, y - 10.0, GRID_X0 + CELL_W * 16.0 + 3.0, y + 10.0);
     fill(ui, g, GRID_X0 - 4.0, y - 11.0, GRID_X0 + CELL_W * 16.0 + 4.0, y + 11.0, 2.0, Color32::from_rgb(16, 12, 10));
+    let off = (Color32::from_rgb(214, 104, 50), Color32::from_rgb(168, 70, 30));
     for s in 0..NUM_STEPS {
         let x0 = GRID_X0 + CELL_W * s as f32;
         let cell = g.r(x0 + 0.8, y - 9.0, x0 + CELL_W - 0.8, y + 9.0);
         let on = state.step_on(prog, ch, s);
         let hits = state.hits_at(prog, ch, s);
+        let chance = if on { state.prob_at(prog, ch, s) } else { 100 };
+        let accent = on && state.accent_on(prog, ch, s);
         // Subdivided steps light green: faint for 2 hits, brightest for 4.
         let green = match hits {
             2 => Some((Color32::from_rgb(70, 150, 70), Color32::from_rgb(28, 88, 30))),
@@ -1029,51 +1078,99 @@ fn draw_row(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, prog
             4 => Some((Color32::from_rgb(200, 255, 170), GREEN_HI)),
             _ => None,
         };
-        let (top, bot) = if s >= len {
+        let outside = s >= len;
+        let (top, bot) = if outside {
             (ORANGE_DEAD, Color32::from_rgb(36, 22, 16))
         } else if let Some(gc) = green {
             gc
         } else if on {
             (Color32::from_rgb(255, 236, 170), ORANGE_HI)
         } else {
-            (Color32::from_rgb(214, 104, 50), Color32::from_rgb(168, 70, 30))
+            off
         };
         vgrad_d(ui, g, x0 + 0.8, y - 9.0, x0 + CELL_W - 0.8, y + 9.0, top, bot);
+        // PROB: the pad is lit only up to its chance; the top stays unlit
+        if on && chance < 100 && !outside {
+            let lit_top = y + 9.0 - 18.0 * chance as f32 / 100.0;
+            vgrad_d(ui, g, x0 + 0.8, y - 9.0, x0 + CELL_W - 0.8, lit_top, Color32::from_rgb(132, 56, 26), Color32::from_rgb(104, 42, 18));
+            ui.painter().line_segment([g.p(x0 + 1.5, lit_top), g.p(x0 + CELL_W - 1.5, lit_top)], Stroke::new(g.l(0.6), Color32::from_rgb(255, 240, 200)));
+        }
+        let lamp_y = if chance < 100 { (y + 9.0 - 9.0 * chance as f32 / 100.0).max(y) } else { y };
         if on && hits <= 1 {
-            fill(ui, g, x0 + 3.0, y - 2.0, x0 + CELL_W - 3.0, y + 2.0, 1.0, Color32::WHITE);
-            fill(ui, g, x0 - 0.7, y - 10.5, x0 + CELL_W + 0.7, y + 10.5, 2.0, Color32::from_rgba_unmultiplied(255, 220, 120, 40));
+            fill(ui, g, x0 + 3.0, lamp_y - 2.0, x0 + CELL_W - 3.0, lamp_y + 2.0, 1.0, Color32::WHITE);
+            if !outside {
+                fill(ui, g, x0 - 0.7, y - 10.5, x0 + CELL_W + 0.7, y + 10.5, 2.0, Color32::from_rgba_unmultiplied(255, 220, 120, 40));
+            }
         } else if hits >= 2 {
             // one small light per hit inside the step
             let glow = 20 + 25 * hits as u8;
-            fill(ui, g, x0 - 0.7, y - 10.5, x0 + CELL_W + 0.7, y + 10.5, 2.0, Color32::from_rgba_unmultiplied(120, 255, 120, glow));
+            if !outside {
+                fill(ui, g, x0 - 0.7, y - 10.5, x0 + CELL_W + 0.7, y + 10.5, 2.0, Color32::from_rgba_unmultiplied(120, 255, 120, glow));
+            }
             let w = (CELL_W - 4.0) / hits as f32;
             for k in 0..hits {
                 let sx = x0 + 2.0 + w * k as f32;
-                fill(ui, g, sx + 0.6, y - 2.0, sx + w - 0.6, y + 2.0, 0.8, Color32::from_rgb(235, 255, 225));
+                fill(ui, g, sx + 0.6, lamp_y - 2.0, sx + w - 0.6, lamp_y + 2.0, 0.8, Color32::from_rgb(235, 255, 225));
             }
+        }
+        // ACCENT: red bar along the top of the pad
+        if accent {
+            fill(ui, g, x0 + 1.6, y - 9.0, x0 + CELL_W - 1.6, y - 6.0, 0.6, if outside { Color32::from_rgb(90, 24, 20) } else { RED_LED });
         }
         // thin step divider, like the light-strip bars of the hardware
         ui.painter().line_segment([g.p(x0 + CELL_W, y - 9.0), g.p(x0 + CELL_W, y + 9.0)], Stroke::new(g.l(0.8), Color32::from_rgb(70, 30, 12)));
+        // end of this voice's loop (when shorter than 16)
+        if s + 1 == len && len < NUM_STEPS {
+            ui.painter().line_segment([g.p(x0 + CELL_W, y - 10.5), g.p(x0 + CELL_W, y + 10.5)], Stroke::new(g.l(1.6), ORANGE_HI));
+        }
         if cur == s as i32 {
             fill(ui, g, x0 + 0.8, y - 9.0, x0 + CELL_W - 0.8, y + 9.0, 0.0, Color32::from_white_alpha(60));
         }
         let resp = ui.interact(cell, Id::new(("cell", ch, s)), g.sense(Sense::click_and_drag()));
-        if state.multiply_mode.load(Relaxed) {
-            if resp.clicked() {
-                state.cycle_hits(prog, ch, s);
+        match mode {
+            PAD_MULTI => {
+                if resp.clicked() {
+                    state.cycle_hits(prog, ch, s);
+                }
             }
-        } else if resp.is_pointer_button_down_on() && st.paint.is_none() {
-            st.paint = Some(!on);
-            state.set_step(prog, ch, s, !on);
+            PAD_ACCENT => {
+                if resp.clicked() {
+                    state.toggle_accent(prog, ch, s);
+                }
+            }
+            PAD_PROB => {
+                let r = if on { resp.on_hover_text(format!("Step {}: {} % chance", s + 1, chance)) } else { resp };
+                if r.clicked() {
+                    state.cycle_prob(prog, ch, s);
+                }
+            }
+            PAD_LENGTH => {
+                if resp.on_hover_text(format!("Voice {}: loop of {} steps", VOICE_LETTERS[ch], s + 1)).clicked() {
+                    state.set_voice_length(prog, ch, s + 1);
+                }
+            }
+            _ => {
+                if resp.is_pointer_button_down_on() && st.paint.is_none() {
+                    st.paint = Some(!on);
+                    state.set_step(prog, ch, s, !on);
+                }
+            }
         }
     }
-    // drag painting across cells
-    if let Some(v) = st.paint {
-        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-            if bar.contains(pos) {
-                let rel = (pos.x - g.p(GRID_X0, 0.0).x) / g.l(CELL_W);
-                if rel >= 0.0 && rel < 16.0 {
-                    state.set_step(prog, ch, rel as usize, v);
+    // the voice's own length, on a small display at the end of the row
+    let lcd = g.r(521.0, y - 6.0, 538.0, y + 6.0);
+    let poly = len != state.length(prog);
+    ui.painter().rect_filled(lcd, g.l(1.5), Color32::from_rgb(30, 4, 4));
+    text(ui, g, 529.5, y, &format!("{len:02}"), 7.0, if poly { RED_LED } else { Color32::from_rgb(150, 40, 30) });
+    // drag painting across cells (NOTE mode)
+    if mode == PAD_NOTE {
+        if let Some(v) = st.paint {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                if bar.contains(pos) {
+                    let rel = (pos.x - g.p(GRID_X0, 0.0).x) / g.l(CELL_W);
+                    if rel >= 0.0 && rel < 16.0 {
+                        state.set_step(prog, ch, rel as usize, v);
+                    }
                 }
             }
         }
@@ -1116,12 +1213,10 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
     let lamp = state.running.load(Relaxed) || state.host_driven.load(Relaxed);
     ui.painter().circle_filled(g.p(659.0, 146.0), g.l(3.5), if lamp { RED_LED } else { Color32::from_rgb(90, 24, 20) });
     if round_button(ui, g, Id::new("bank_load"), 626.0, 148.0, 8.0, None).on_hover_text("LOAD: open a bank file — the 16 rhythm programs (with MULTIPLY), all sounds, mixer and tempo").clicked() {
-        let m = bank::load_bank_dialog(access, state);
-        say(st, m, now);
+        start_dialog(st, now, || bank::load_bank_task());
     }
     if round_button(ui, g, Id::new("bank_save"), 692.0, 148.0, 8.0, None).on_hover_text("SAVE: save everything in one bank file — the 16 rhythm programs (with MULTIPLY), all sounds, mixer and tempo").clicked() {
-        let m = bank::save_bank_dialog(access, state);
-        say(st, m, now);
+        start_dialog(st, now, || bank::save_bank_task(access, state));
     }
     text(ui, g, 626.0, 168.0, "LOAD", 8.0, Color32::from_rgb(50, 30, 16));
     text(ui, g, 692.0, 168.0, "SAVE", 8.0, Color32::from_rgb(50, 30, 16));
@@ -1250,12 +1345,10 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
     text(ui, g, 616.0, 204.0, "LOAD", 7.5, INK);
     text(ui, g, 702.0, 204.0, "SAVE", 7.5, INK);
     if ui.interact(lb, Id::new(("mod_load", ch)), g.sense(Sense::click())).on_hover_text("Load a module sound").clicked() {
-        let m = bank::load_module_dialog(access, ch);
-        say(st, m, now);
+        start_dialog(st, now, || bank::load_module_task(ch));
     }
     if ui.interact(sb, Id::new(("mod_save", ch)), g.sense(Sense::click())).on_hover_text("Save this module sound").clicked() {
-        let m = bank::save_module_dialog(access, ch);
-        say(st, m, now);
+        start_dialog(st, now, || bank::save_module_task(access, ch));
     }
     if round_button(ui, g, Id::new(("mod_rand", ch)), 659.0, 204.0, 12.0, Some(Color32::from_rgb(196, 90, 70)))
         .on_hover_text("Random sound for this module")

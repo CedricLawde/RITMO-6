@@ -5,6 +5,15 @@ use crate::fx::{Fx, FxValues};
 use crate::params::{FX_PARAMS, NUM_FX_BUSES};
 use crate::params::{internal_bpm, internal_steps_per_sec, sync_division, ParamId, NUM_CH, SYNC_STEPS_PER_BEAT, VOICE_PARAMS};
 use crate::state::SharedState;
+
+/// A queued step of one voice (NUDGE): samples left, hits, accent (0 = plain).
+#[derive(Clone, Copy)]
+struct Queued {
+    delay: f64,
+    hits: u32,
+    accent: f32,
+}
+const NO_QUEUE: Queued = Queued { delay: 0.0, hits: 0, accent: 0.0 };
 use std::sync::atomic::Ordering::Relaxed;
 
 /// First MIDI note of the key map (C1 or C3 depending on the host's octave naming).
@@ -28,6 +37,8 @@ pub struct Values {
     pub sound_drift: f32,
     /// SWING 0..1: every second step late by up to half a step.
     pub swing: f32,
+    /// ACCENT 0..1: strength of accented steps.
+    pub accent: f32,
     /// FX sends per voice (0 PHASER, 1 DIST, 2 DELAY, 3 SPRING) and the FX section settings.
     pub sends: [[f32; NUM_FX_BUSES]; NUM_CH],
     pub fx: FxValues,
@@ -47,6 +58,7 @@ impl Values {
             tempo_drift: get(ParamId::TempoDrift).clamp(0.0, 1.0),
             sound_drift: get(ParamId::SoundDrift).clamp(0.0, 1.0),
             swing: get(ParamId::Swing).clamp(0.0, 1.0),
+            accent: get(ParamId::Accent).clamp(0.0, 1.0),
             sends: std::array::from_fn(|c| std::array::from_fn(|k| get(ParamId::Send(c, k)).clamp(0.0, 1.0))),
             fx: std::array::from_fn(|i| get(ParamId::Fx(FX_PARAMS[i]))),
             voices: std::array::from_fn(|c| {
@@ -84,6 +96,8 @@ pub struct Engine {
     pan_random: [f32; NUM_CH],
     /// Multiply: hits still to play inside the current step, and samples until the next one.
     pending: [u32; NUM_CH],
+    /// accent of the step the MULTIPLY hits belong to
+    pending_accent: [f32; NUM_CH],
     countdown: [f64; NUM_CH],
     interval: [f64; NUM_CH],
     /// Length of the current step in samples.
@@ -106,7 +120,11 @@ pub struct Engine {
     drift_share: [f32; NUM_CH],
     swing: f32,
     /// NUDGE (column A): up to two hits per voice waiting to be played (samples left, hits).
-    nudged: [[(f64, u32); 2]; NUM_CH],
+    nudged: [[Queued; 2]; NUM_CH],
+    /// Step of each voice in its own loop (polymetry: voices may have different lengths).
+    voice_step: [usize; NUM_CH],
+    /// ACCENT knob of this block
+    accent: f32,
     /// true for the first step after START (early voices play it at once)
     first_step: bool,
     // per block
@@ -130,6 +148,7 @@ impl Engine {
             held_start_keys: 0,
             pan_random: [0.0; NUM_CH],
             pending: [0; NUM_CH],
+            pending_accent: [0.0; NUM_CH],
             countdown: [0.0; NUM_CH],
             interval: [0.0; NUM_CH],
             step_samples: 0.0,
@@ -145,7 +164,9 @@ impl Engine {
             sound_drift: 0.0,
             drift_share: [1.0; NUM_CH],
             swing: 0.0,
-            nudged: [[(0.0, 0); 2]; NUM_CH],
+            nudged: [[NO_QUEUE; 2]; NUM_CH],
+            voice_step: [0; NUM_CH],
+            accent: 0.5,
             first_step: true,
             host_active: false,
             block_pos0: 0.0,
@@ -170,7 +191,7 @@ impl Engine {
         self.host_next = i64::MIN;
         self.held_start_keys = 0;
         self.pending = [0; NUM_CH];
-        self.nudged = [[(0.0, 0); 2]; NUM_CH];
+        self.nudged = [[NO_QUEUE; 2]; NUM_CH];
         self.abs_steps = 0;
         self.t_samples = 0.0;
         self.grid_next = 0.0;
@@ -189,7 +210,7 @@ impl Engine {
         }
         if note < PROGRAM_NOTE {
             let ch = (note - BASE_NOTE) as usize;
-            self.strike(state, ch, false);
+            self.strike(state, ch, false, 0.0);
         } else if !state.keyb_ctrl.load(Relaxed) {
         } else if note < START_NOTE {
             state.program.store(note - PROGRAM_NOTE, Relaxed);
@@ -213,8 +234,8 @@ impl Engine {
         }
     }
 
-    fn strike(&mut self, state: &SharedState, ch: usize, stacked: bool) {
-        self.voices[ch].strike(self.pan_random[ch], self.sound_drift * self.drift_share[ch], stacked);
+    fn strike(&mut self, state: &SharedState, ch: usize, stacked: bool, accent: f32) {
+        self.voices[ch].strike(self.pan_random[ch], self.sound_drift * self.drift_share[ch], stacked, accent);
         state.hits[ch].fetch_add(1, Relaxed);
     }
 
@@ -223,7 +244,7 @@ impl Engine {
         let req = state.trig_req.swap(0, Relaxed);
         for ch in 0..NUM_CH {
             if req & (1 << ch) != 0 {
-                self.strike(state, ch, false);
+                self.strike(state, ch, false, 0.0);
             }
         }
         for ch in 0..NUM_CH {
@@ -231,6 +252,7 @@ impl Engine {
             self.drift_share[ch] = vals.voices[ch].drift_amount.clamp(0.0, 1.0);
         }
         self.swing = vals.swing;
+        self.accent = vals.accent;
         self.sound_drift = vals.sound_drift;
         if let Some(t) = transport.tempo {
             if t > 1.0 {
@@ -245,7 +267,10 @@ impl Engine {
             self.host_next = i64::MIN;
             if !state.running.load(Relaxed) {
                 state.cur_step.store(-1, Relaxed);
-                self.nudged = [[(0.0, 0); 2]; NUM_CH];
+                for v in state.voice_step.iter() {
+                    v.store(-1, Relaxed);
+                }
+                self.nudged = [[NO_QUEUE; 2]; NUM_CH];
             }
         }
         self.frame_in_block = 0;
@@ -261,43 +286,68 @@ impl Engine {
     /// A step is reached. Voices on the grid play now; NUDGE (column A) moves a voice up to half
     /// a step: late voices are queued for later in this step, early voices are queued from this
     /// step for the next one (so they land just before it, like disco claps before the snare).
+    ///
+    /// Each voice reads its own step (`voice_step`), which loops over the voice's own length.
+    /// PROB is drawn once per step and voice, when the step is reached (or queued, for an early
+    /// voice); a step that loses the draw is silent, MULTIPLY hits included.
     fn fire(&mut self, state: &SharedState, vals: &Values) {
         state.cur_step.store(self.step as i32, Relaxed);
         let prog = state.program();
-        let len = state.length(prog);
-        let next = (self.step + 1) % len;
         let l = self.step_samples;
         for ch in 0..NUM_CH {
+            let vlen = state.voice_length(prog, ch);
+            let step = self.voice_step[ch] % vlen;
+            state.voice_step[ch].store(step as i8, Relaxed);
+            let next = (step + 1) % vlen;
             let nudge = vals.voices[ch].nudge.clamp(-1.0, 1.0) as f64;
-            let cur = state.hits_at(prog, ch, self.step);
             if nudge >= 0.0 {
+                let (cur, acc) = self.draw_step(state, prog, ch, step);
                 if cur > 0 {
                     let d = nudge * 0.5 * l;
                     if d < 0.5 {
-                        self.play_step(state, vals, ch, cur);
+                        self.play_step(state, vals, ch, cur, acc);
                     } else {
-                        self.queue(ch, d, cur);
+                        self.queue(ch, d, cur, acc);
                     }
                 }
             } else {
-                if self.first_step && cur > 0 {
+                if self.first_step {
                     // nothing before START: an early voice plays its first step at once
-                    self.play_step(state, vals, ch, cur);
+                    let (cur, acc) = self.draw_step(state, prog, ch, step);
+                    if cur > 0 {
+                        self.play_step(state, vals, ch, cur, acc);
+                    }
                 }
-                let nx = state.hits_at(prog, ch, next);
+                let (nx, acc) = self.draw_step(state, prog, ch, next);
                 if nx > 0 {
-                    self.queue(ch, (1.0 + nudge * 0.5) * l, nx);
+                    self.queue(ch, (1.0 + nudge * 0.5) * l, nx, acc);
                 }
             }
         }
         self.first_step = false;
     }
 
+    /// Hits a voice plays on `step` (0 = silent, PROB draw included) and its accent strength.
+    fn draw_step(&mut self, state: &SharedState, prog: usize, ch: usize, step: usize) -> (u32, f32) {
+        let hits = state.hits_at(prog, ch, step);
+        if hits == 0 {
+            return (0, 0.0);
+        }
+        let chance = state.prob_at(prog, ch, step);
+        if chance < 100 && self.rand() * 100.0 >= chance as f32 {
+            return (0, 0.0);
+        }
+        let acc = if state.accent_on(prog, ch, step) { self.accent } else { 0.0 };
+        (hits, acc)
+    }
+
     /// Strike a voice for one step (with its MULTIPLY hits spread over the step).
-    fn play_step(&mut self, state: &SharedState, vals: &Values, ch: usize, n: u32) {
+    fn play_step(&mut self, state: &SharedState, vals: &Values, ch: usize, n: u32, accent: f32) {
+        let _ = vals;
         // MUTE only takes the voice out of the Mix (see next_frame): it still plays on its own output
         if state.row_audible(ch, false) {
-            self.strike(state, ch, false);
+            self.strike(state, ch, false, accent);
+            self.pending_accent[ch] = accent;
             // Multiply: the step keeps its length and is split into n equal hits.
             self.pending[ch] = n - 1;
             self.interval[ch] = self.step_samples / n as f64;
@@ -307,9 +357,25 @@ impl Engine {
         }
     }
 
-    fn queue(&mut self, ch: usize, delay: f64, n: u32) {
-        let slot = if self.nudged[ch][0].1 == 0 { 0 } else if self.nudged[ch][1].1 == 0 { 1 } else { 0 };
-        self.nudged[ch][slot] = (delay, n);
+    fn queue(&mut self, ch: usize, delay: f64, n: u32, accent: f32) {
+        let slot = if self.nudged[ch][0].hits == 0 { 0 } else if self.nudged[ch][1].hits == 0 { 1 } else { 0 };
+        self.nudged[ch][slot] = Queued { delay, hits: n, accent };
+    }
+
+    /// Advance every voice to the step of absolute step `n` (internal clock: by one, so a length
+    /// changed while playing takes effect at once; host sync: from the host position).
+    fn advance_voices(&mut self, state: &SharedState, n: i64, from_host: bool) {
+        let prog = state.program();
+        for ch in 0..NUM_CH {
+            let vlen = state.voice_length(prog, ch);
+            self.voice_step[ch] = if from_host {
+                n.rem_euclid(vlen as i64) as usize
+            } else if n == 0 {
+                0
+            } else {
+                (self.voice_step[ch] + 1) % vlen
+            };
+        }
     }
 
     fn clock(&mut self, state: &SharedState, vals: &Values) {
@@ -327,7 +393,7 @@ impl Engine {
             {
                 // start, loop or jump: next step is the first one not yet passed
                 self.first_step = true;
-                self.nudged = [[(0.0, 0); 2]; NUM_CH];
+                self.nudged = [[NO_QUEUE; 2]; NUM_CH];
                 self.host_next = pos.ceil() as i64;
                 if pos.fract() < 1e-6 {
                     self.host_next = pos.floor() as i64;
@@ -339,6 +405,7 @@ impl Engine {
                     self.new_drift_cycle(n);
                 }
                 self.step = n.rem_euclid(len as i64) as usize;
+                self.advance_voices(state, n, true);
                 self.host_next += 1;
                 self.fire(state, vals);
             }
@@ -357,7 +424,7 @@ impl Engine {
             if !self.was_running {
                 // START: the grid starts now, step 0 sits exactly on it
                 self.first_step = true;
-                self.nudged = [[(0.0, 0); 2]; NUM_CH];
+                self.nudged = [[NO_QUEUE; 2]; NUM_CH];
                 self.t_samples = 0.0;
                 self.grid_next = 0.0;
                 self.abs_steps = 0;
@@ -376,14 +443,18 @@ impl Engine {
                     self.new_drift_cycle(n);
                 }
                 self.step = if n == 0 { 0 } else { (self.step + 1) % len };
+                self.advance_voices(state, n, false);
                 self.abs_steps += 1;
                 self.grid_next += samples_per_step;
                 self.fire(state, vals);
             }
         } else if self.was_running {
             state.cur_step.store(-1, Relaxed);
+            for v in state.voice_step.iter() {
+                v.store(-1, Relaxed);
+            }
             self.pending = [0; NUM_CH];
-            self.nudged = [[(0.0, 0); 2]; NUM_CH];
+            self.nudged = [[NO_QUEUE; 2]; NUM_CH];
         }
         self.was_running = running;
     }
@@ -393,13 +464,13 @@ impl Engine {
         self.frame_in_block += 1;
         for ch in 0..NUM_CH {
             for q in 0..2 {
-                let (d, n) = self.nudged[ch][q];
-                if n > 0 {
-                    if d <= 1.0 {
-                        self.nudged[ch][q] = (0.0, 0);
-                        self.play_step(state, vals, ch, n);
+                let Queued { delay, hits, accent } = self.nudged[ch][q];
+                if hits > 0 {
+                    if delay <= 1.0 {
+                        self.nudged[ch][q] = NO_QUEUE;
+                        self.play_step(state, vals, ch, hits, accent);
                     } else {
-                        self.nudged[ch][q].0 = d - 1.0;
+                        self.nudged[ch][q].delay = delay - 1.0;
                     }
                 }
             }
@@ -411,7 +482,8 @@ impl Engine {
                     self.countdown[ch] += self.interval[ch];
                     self.pending[ch] -= 1;
                     if state.row_audible(ch, false) {
-                        self.strike(state, ch, true);
+                        let a = self.pending_accent[ch];
+                        self.strike(state, ch, true, a);
                     }
                 }
             }
@@ -803,26 +875,38 @@ mod tests {
 
     #[test]
     fn multiply_hits_saturate() {
+        // the overload grows gradually as hits come closer together: peak of the last hit of a
+        // roll, relative to a lone hit, for hits 1 s, 250 ms, 125 ms, 60 ms, 30 ms, 15 ms apart
         let vals = defaults();
         let s = vals.voices[0];
-        // the same 4-hit roll, with stacked hits (MULTIPLY) or plain retriggers
-        let energy = |stacked: bool| {
+        let sr = 48000.0;
+        let last_peak = |gap: f32, hits: usize| {
             let mut v = Voice::new(7);
-            v.strike(0.0, 0.0, false);
-            let mut e = 0.0f32;
-            for i in 1..6000 {
-                if i % 1500 == 0 {
-                    v.strike(0.0, 0.0, stacked);
+            let step = (gap * sr) as usize;
+            let mut peak = 0.0f32;
+            for i in 0..(step * (hits - 1) + 4800) {
+                if i % step == 0 && i / step < hits {
+                    v.strike(0.0, 0.0, false, 0.0);
                 }
-                let y = v.render(&s, 48000.0, true);
-                assert!(y.is_finite() && y.abs() <= 1.5);
-                e += y * y;
+                let y = v.render(&s, sr, true);
+                assert!(y.is_finite() && y.abs() <= 2.0);
+                if i >= step * (hits - 1) {
+                    peak = peak.max(y.abs());
+                }
             }
-            e
+            peak
         };
-        let plain = energy(false);
-        let roll = energy(true);
-        assert!(roll > plain * 1.15, "roll {roll} vs plain {plain}");
+        let lone = last_peak(1.0, 1);
+        let gaps = [1.0f32, 0.25, 0.125, 0.06, 0.03, 0.015];
+        let peaks: Vec<f32> = gaps.iter().map(|g| last_peak(*g, 4) / lone).collect();
+        assert!((peaks[0] - 1.0).abs() < 0.01, "hits 1 s apart must stay clean: {peaks:?}");
+        for w in peaks.windows(2) {
+            assert!(w[1] >= w[0] - 1e-4, "the overload must grow as hits get closer: {peaks:?}");
+        }
+        assert!(peaks[5] > peaks[0] * 1.05, "a fast roll should overload: {peaks:?}");
+        // 2 hits in a step overload less than 4
+        assert!(last_peak(0.03, 2) <= last_peak(0.03, 4) + 1e-4);
+        eprintln!("retrigger overload (4th hit / lone hit) for gaps {gaps:?}: {peaks:?}");
     }
 
     #[test]
@@ -836,4 +920,111 @@ mod tests {
         e.note_off(&state, 0, START_NOTE);
         assert!(!state.running.load(Relaxed));
     }
+
+    fn empty_state() -> SharedState {
+        let state = SharedState::default();
+        for p in 0..16 {
+            state.clear_program(p);
+        }
+        state
+    }
+
+    /// Hits per voice over `steps` steps of the internal clock.
+    fn count_hits(state: &SharedState, vals: &Values, steps: f64) -> [u32; NUM_CH] {
+        let mut e = Engine::new(48000.0);
+        state.running.store(true, Relaxed);
+        e.begin_block(state, vals, &Transport::default());
+        let before: [u32; NUM_CH] = std::array::from_fn(|c| state.hits[c].load(Relaxed));
+        let nominal = 48000.0 / internal_steps_per_sec(vals.tempo) as f64;
+        for _ in 0..(nominal * steps) as u64 {
+            e.next_frame(state, vals);
+        }
+        std::array::from_fn(|c| state.hits[c].load(Relaxed) - before[c])
+    }
+
+    #[test]
+    fn each_voice_loops_over_its_own_length() {
+        let state = empty_state();
+        state.set_step(0, 0, 0, true);
+        state.set_step(0, 1, 0, true);
+        state.set_voice_length(0, 0, 3); // A: 3-step loop
+        state.set_voice_length(0, 2, 5); // C: 5 steps (no notes): the program follows the longest
+        assert_eq!(state.voice_length(0, 1), 16);
+        assert_eq!(state.length(0), 16);
+        let mut vals = defaults();
+        vals.tempo = 6.1;
+        // 48 steps: A plays on steps 0, 3, 6 .. 45 (16 times), B on 0, 16, 32 (3 times)
+        let h = count_hits(&state, &vals, 47.5);
+        assert_eq!(h[0], 16, "A");
+        assert_eq!(h[1], 3, "B");
+        // STEPS row: every voice follows the program length again
+        state.set_length(0, 8);
+        assert!((0..NUM_CH).all(|c| state.voice_length(0, c) == 8));
+    }
+
+    #[test]
+    fn host_sync_places_each_voice_in_its_own_loop() {
+        let state = empty_state();
+        state.set_voice_length(0, 0, 3);
+        let mut vals = defaults();
+        vals.sync = true;
+        vals.tempo = 6.0; // 1/16
+        let mut e = Engine::new(48000.0);
+        let t = Transport { playing: true, pos_beats: Some(2.5), tempo: Some(120.0) };
+        e.begin_block(&state, &vals, &t);
+        e.next_frame(&state, &vals);
+        // step 10 of the song: 10 mod 3 = 1 for A, 10 for B
+        assert_eq!(state.voice_step[0].load(Relaxed), 1);
+        assert_eq!(state.voice_step[1].load(Relaxed), 10);
+    }
+
+    #[test]
+    fn probability_thins_out_a_step() {
+        let state = empty_state();
+        for s in 0..16 {
+            state.set_step(0, 0, s, true); // A: always
+            state.set_step(0, 1, s, true); // B: 50 %
+            state.cycle_prob(0, 1, s);
+            state.cycle_prob(0, 1, s);
+            assert_eq!(state.prob_at(0, 1, s), 50);
+            state.set_step(0, 2, s, true); // C: 25 %
+            for _ in 0..3 {
+                state.cycle_prob(0, 2, s);
+            }
+        }
+        let mut vals = defaults();
+        vals.tempo = 6.1;
+        let h = count_hits(&state, &vals, 799.5);
+        assert_eq!(h[0], 800);
+        assert!((330..=470).contains(&h[1]), "50 %: {}", h[1]);
+        assert!((140..=260).contains(&h[2]), "25 %: {}", h[2]);
+        // a cleared step forgets its chance
+        state.set_step(0, 1, 0, false);
+        state.set_step(0, 1, 0, true);
+        assert_eq!(state.prob_at(0, 1, 0), 100);
+    }
+
+    #[test]
+    fn accent_plays_louder() {
+        let vals = defaults();
+        let s = vals.voices[0];
+        let peak = |accent: f32| {
+            let mut v = Voice::new(7);
+            v.strike(0.0, 0.0, false, accent);
+            (0..9600).map(|_| v.render(&s, 48000.0, true).abs()).fold(0.0f32, f32::max)
+        };
+        let plain = peak(0.0);
+        let half = peak(0.5);
+        let full = peak(1.0);
+        assert!(half > plain * 1.15, "accent 50 %: {half} vs {plain}");
+        assert!(full > half, "accent 100 %: {full} vs {half}");
+        assert!(full <= 2.0);
+        // toggling: an off step comes on accented, a second click removes the accent
+        let state = empty_state();
+        state.toggle_accent(0, 3, 4);
+        assert!(state.step_on(0, 3, 4) && state.accent_on(0, 3, 4));
+        state.toggle_accent(0, 3, 4);
+        assert!(state.step_on(0, 3, 4) && !state.accent_on(0, 3, 4));
+    }
 }
+

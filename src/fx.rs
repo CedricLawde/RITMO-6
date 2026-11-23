@@ -119,8 +119,14 @@ impl Rng {
 // ------------------------------------------------------------------------------------------ PHASER
 
 /// Four-stage phaser in the spirit of the Small Stone: four first-order all-pass stages swept
-/// by a smooth LFO, summed with the input, COLOR feeding the output back (resonance), and a
-/// slow random drift of the LFO rate for an organic, slightly imperfect movement.
+/// by a smooth LFO, COLOR feeding the output back (resonance), and a slow random drift of the
+/// LFO rate for an organic, slightly imperfect movement.
+///
+/// It sits on a send, and the dry voice is already in the Mix: a phaser's notches come from
+/// adding the dry sound to its phase-shifted copy, so the return carries ONLY the shifted
+/// copy. Dry (in the Mix) + return then cancel at the swept notches. With MIX at 100 %, LEVEL
+/// at 0 dB and the voice's send at 100 %, the two are equal and the notches are complete
+/// (before 1.3.2 the return also carried dry sound, which filled the notches in).
 struct Phaser {
     sr: f32,
     z: [[f32; 4]; 2],
@@ -144,7 +150,7 @@ impl Phaser {
             drift_target: 0.0,
             drift_count: 0,
             rng: Rng(0x51A7_0001),
-            s: [Smooth::new(0.4), Smooth::new(0.7), Smooth::new(0.4), Smooth::new(0.5), Smooth::new(0.7)],
+            s: [Smooth::new(0.4), Smooth::new(0.75), Smooth::new(0.45), Smooth::new(1.0), Smooth::new(0.7)],
         }
     }
 
@@ -167,20 +173,22 @@ impl Phaser {
         let mut out = [0.0; 2];
         for ch in 0..2 {
             // the right channel runs a few degrees behind for a little width
-            let ph = self.lfo + ch as f32 * 0.03;
+            // the right channel runs 36 degrees behind: the notches move across the stereo image
+            let ph = self.lfo + ch as f32 * 0.1;
             let m = 0.5 - 0.5 * (TAU * ph).cos();
-            let fc = 140.0 * (2.0f32).powf(depth * m * 5.0);
+            // all-pass corner from 160 Hz up to 10 kHz at full DEPTH: the two notches (at 0.41
+            // and 2.4 times the corner) sweep the whole drum range, hats and cymbals included
+            let fc = 160.0 * (2.0f32).powf(depth * m * 6.0);
             let t = (PI * fc / self.sr).tan();
             let a = (t - 1.0) / (t + 1.0);
-            let mut y = x[ch] + (self.fb[ch] * color * 0.8).tanh();
+            let mut y = x[ch] + (self.fb[ch] * color * 0.92).tanh();
             for st in 0..4 {
                 let o = a * y + self.z[ch][st];
                 self.z[ch][st] = flush(y - a * o);
                 y = o;
             }
             self.fb[ch] = flush(y);
-            let wet = 0.5 * (x[ch] + y);
-            out[ch] = (x[ch] * (1.0 - mix) + wet * mix) * level;
+            out[ch] = y * mix * level;
         }
         out
     }
@@ -792,6 +800,40 @@ mod tests {
             }
             assert!(last < first * 0.05, "mode {mode}: still {last} after 40 s (first {first})");
         }
+    }
+
+    /// Dry voice (as in the Mix) + phaser return, send at 100 %: the sweeping notch must
+    /// really cancel a tone (at least -20 dB), not just colour it.
+    #[test]
+    fn phaser_notches_cut_deep_against_the_dry_mix() {
+        let sr = 48000.0;
+        let mut fx = Fx::new(sr);
+        let mut v = defaults();
+        v[FxParam::DsBypass.index()] = 1.0;
+        v[FxParam::DlBypass.index()] = 1.0;
+        v[FxParam::SpBypass.index()] = 1.0;
+        v[FxParam::PhColor.index()] = 0.0;
+        v[FxParam::PhDepth.index()] = 1.0;
+        v[FxParam::PhRate.index()] = 0.5; // 0.6 Hz
+        let block = 480;
+        let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+        let mut acc = 0.0f32;
+        for i in 0..(sr as usize * 4) {
+            let x = (TAU * 1000.0 * i as f32 / sr).sin() * 0.5;
+            let o = fx.process(&[[x, x], [0.0; 2], [0.0; 2], [0.0; 2]], &v, 120.0);
+            let mixed = x + o[0];
+            acc += mixed * mixed;
+            if (i + 1) % block == 0 {
+                let rms = (acc / block as f32).sqrt();
+                acc = 0.0;
+                if i > sr as usize / 2 {
+                    lo = lo.min(rms);
+                    hi = hi.max(rms);
+                }
+            }
+        }
+        let depth_db = 20.0 * (lo / hi).log10();
+        assert!(depth_db < -20.0, "notch only {depth_db:.1} dB deep");
     }
 
     #[test]
