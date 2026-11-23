@@ -295,7 +295,8 @@ impl Engine {
 
     /// Strike a voice for one step (with its MULTIPLY hits spread over the step).
     fn play_step(&mut self, state: &SharedState, vals: &Values, ch: usize, n: u32) {
-        if state.row_audible(ch, vals.mute[ch]) {
+        // MUTE only takes the voice out of the Mix (see next_frame): it still plays on its own output
+        if state.row_audible(ch, false) {
             self.strike(state, ch, false);
             // Multiply: the step keeps its length and is split into n equal hits.
             self.pending[ch] = n - 1;
@@ -409,7 +410,7 @@ impl Engine {
                 if self.countdown[ch] <= 0.0 {
                     self.countdown[ch] += self.interval[ch];
                     self.pending[ch] -= 1;
-                    if state.row_audible(ch, vals.mute[ch]) {
+                    if state.row_audible(ch, false) {
                         self.strike(state, ch, true);
                     }
                 }
@@ -420,13 +421,18 @@ impl Engine {
         for ch in 0..NUM_CH {
             let raw = self.voices[ch].render(&vals.voices[ch], self.sr, vals.classic);
             // Level Adj: linear, 10 V = unity.
-            let gain = if vals.mute[ch] { 0.0 } else { vals.level[ch] / 10.0 };
+            let gain = vals.level[ch] / 10.0;
             let v = raw * gain;
             f.voices[ch] = v;
             // Pan -5..+5 V (+ Pan Random offset), equal-power law (estimated).
             let pan = ((vals.pan[ch] + self.voices[ch].pan_offset) / 5.0).clamp(-1.0, 1.0);
             let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
             let (l, r) = (v * angle.cos(), v * angle.sin());
+            // MUTE takes the voice (and its FX sends) out of the stereo Mix only: its own
+            // output keeps playing, so a voice sent to its own track is never doubled in the Mix
+            if vals.mute[ch] {
+                continue;
+            }
             f.left += l;
             f.right += r;
             // post-fader, post-pan sends to the shared FX buses
@@ -557,6 +563,25 @@ mod tests {
             assert!(peak > 0.02, "voice {ch} too quiet: {peak}");
             assert!(peak < 4.0, "voice {ch} too loud: {peak}");
         }
+    }
+
+    #[test]
+    fn mute_leaves_the_mix_but_keeps_the_voice_output() {
+        let state = SharedState::default();
+        let mut vals = defaults();
+        vals.mute[0] = true;
+        vals.sends[0] = [1.0; NUM_FX_BUSES]; // even its FX sends must stay out of the Mix
+        let mut e = Engine::new(48000.0);
+        e.note_on(&state, 0, BASE_NOTE, 1.0);
+        e.begin_block(&state, &vals, &Transport::default());
+        let (mut mix, mut own) = (0.0f32, 0.0f32);
+        for _ in 0..24000 {
+            let f = e.next_frame(&state, &vals);
+            mix = mix.max(f.left.abs()).max(f.right.abs());
+            own = own.max(f.voices[0].abs());
+        }
+        assert!(mix < 1e-6, "a muted voice reached the Mix: {mix}");
+        assert!(own > 0.02, "the muted voice should still play on its own output: {own}");
     }
 
     #[test]

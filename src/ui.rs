@@ -16,6 +16,8 @@ pub const W: f32 = 840.0;
 /// The right-hand column (nameplate, MIDI, module slots) moved right by this much.
 const RIGHT_SHIFT: f32 = 80.0;
 pub const H: f32 = 490.0;
+/// The window opens this many times the design size (1344 x 784), as the person asked.
+pub const START_SCALE: f32 = 1.6;
 
 const BG: Color32 = Color32::from_rgb(10, 10, 11);
 const CASE: Color32 = Color32::from_rgb(24, 25, 27);
@@ -516,7 +518,7 @@ fn draw_fx_panel(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shar
         &[PhRate, PhDepth, PhColor, PhMix, PhLevel],
         &[DsDrive, DsFilter, DsFat, DsMix, DsLevel],
         &[DlTime, DlFeedback, DlTone, DlAge, DlMod, DlMix, DlLevel],
-        &[SpDecay, SpDamping, SpTension, SpDrive, SpMix, SpLevel],
+        &[SpDecay, SpDamping, SpTension, SpDrive, SpMix, SpLevel, SpLowCut, SpHighCut],
     ];
     let bypass = [PhBypass, DsBypass, DlBypass, SpBypass];
     for k in 0..4 {
@@ -787,7 +789,7 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
         }
         let muted = access.get(ParamId::Mute(ch)) >= 0.5;
         if round_button(ui, g, Id::new(("mute", ch)), 206.0, y, 8.0, muted.then_some(RED_LED))
-            .on_hover_text("Mute")
+            .on_hover_text("MUTE: takes the voice (and its effects) out of the Mix. Its own separate output keeps playing, so you can send it to its own track without doubling it.")
             .clicked()
         {
             access.set_gesture(ParamId::Mute(ch), if muted { 0.0 } else { 1.0 });

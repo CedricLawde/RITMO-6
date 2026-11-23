@@ -191,6 +191,10 @@ pub struct FxParams {
     pub sp_level: FloatParam,
     #[id = "sp_bypass"]
     pub sp_bypass: BoolParam,
+    #[id = "sp_lowcut"]
+    pub sp_low_cut: FloatParam,
+    #[id = "sp_highcut"]
+    pub sp_high_cut: FloatParam,
 }
 
 impl FxParams {
@@ -228,6 +232,8 @@ impl FxParams {
             sp_mix: f(SpMix),
             sp_level: f(SpLevel),
             sp_bypass: b(SpBypass),
+            sp_low_cut: f(SpLowCut),
+            sp_high_cut: f(SpHighCut),
         }
     }
 
@@ -264,6 +270,8 @@ impl FxParams {
             SpMix => F(&self.sp_mix),
             SpLevel => F(&self.sp_level),
             SpBypass => B(&self.sp_bypass),
+            SpLowCut => F(&self.sp_low_cut),
+            SpHighCut => F(&self.sp_high_cut),
         }
     }
 }
@@ -302,7 +310,8 @@ enum PRef<'a> {
 impl RitmoParams {
     fn new(state: Arc<SharedState>) -> Self {
         RitmoParams {
-            editor_state: EguiState::from_size(ui::W as u32, ui::H as u32),
+            // opens 1.6x the design size (1344 x 784); the corner still resizes it
+            editor_state: EguiState::from_size((ui::W * ui::START_SCALE) as u32, (ui::H * ui::START_SCALE) as u32),
             patterns: PatternStore(state),
             ch: std::array::from_fn(ChannelParams::new),
             master: fparam(ParamId::Master),

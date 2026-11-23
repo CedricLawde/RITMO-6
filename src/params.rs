@@ -119,9 +119,13 @@ pub enum FxParam {
     SpMix,
     SpLevel,
     SpBypass,
+    /// Spring return high-pass (LOW CUT), 20 Hz (off) .. 1 kHz.
+    SpLowCut,
+    /// Spring return low-pass (HIGH CUT), 1 kHz .. 20 kHz (off).
+    SpHighCut,
 }
 
-pub const FX_PARAMS: [FxParam; 29] = [
+pub const FX_PARAMS: [FxParam; 31] = [
     FxParam::PhRate,
     FxParam::PhDepth,
     FxParam::PhColor,
@@ -151,6 +155,8 @@ pub const FX_PARAMS: [FxParam; 29] = [
     FxParam::SpMix,
     FxParam::SpLevel,
     FxParam::SpBypass,
+    FxParam::SpLowCut,
+    FxParam::SpHighCut,
 ];
 pub const NUM_FX_PARAMS: usize = FX_PARAMS.len();
 
@@ -189,6 +195,16 @@ pub fn delay_free_ms(v: f32) -> f32 {
 /// Phaser rate: 0.03 .. 12 Hz.
 pub fn phaser_hz(v: f32) -> f32 {
     0.03 * (400.0f32).powf(v.clamp(0.0, 1.0))
+}
+
+/// Spring LOW CUT (high-pass): 20 Hz (off) .. 1 kHz.
+pub fn spring_low_cut_hz(v: f32) -> f32 {
+    20.0 * (50.0f32).powf(v.clamp(0.0, 1.0))
+}
+
+/// Spring HIGH CUT (low-pass): 1 kHz .. 20 kHz (off).
+pub fn spring_high_cut_hz(v: f32) -> f32 {
+    1000.0 * (20.0f32).powf(v.clamp(0.0, 1.0))
 }
 
 /// FX level knob to gain: 0 .. x2 (+6 dB), 0.707 = unity.
@@ -287,6 +303,8 @@ pub enum Show {
     /// 0..1 = straight .. 75 % swing.
     Swing,
     PhaserHz,
+    LowCut,
+    HighCut,
     DelayTime,
     DelayMode,
     FxLevel,
@@ -367,6 +385,8 @@ impl Spec {
                 }
             }
             Show::PhaserHz => format!("{:.2} Hz", phaser_hz(plain)),
+            Show::LowCut => if plain <= 0.001 { "OFF".to_string() } else { format!("{:.0} Hz", spring_low_cut_hz(plain)) },
+            Show::HighCut => if plain >= 0.999 { "OFF".to_string() } else { format!("{:.1} kHz", spring_high_cut_hz(plain) / 1000.0) },
             Show::DelayTime => format!(
                 "FREE {:.0} ms / SYNC {}",
                 delay_free_ms(plain),
@@ -685,6 +705,8 @@ pub fn fx_spec(p: FxParam) -> Spec {
         SpMix => knob("Spring Mix", "MIX", 1.0, Show::Percent),
         SpLevel => knob("Spring Level", "LEVEL", 0.6, Show::FxLevel),
         SpBypass => toggle("Spring Bypass", "BYPASS", 0.0, Show::Bypass),
+        SpLowCut => knob("Spring Low Cut", "LOW CUT", 0.0, Show::LowCut),
+        SpHighCut => knob("Spring High Cut", "HIGH CUT", 1.0, Show::HighCut),
     }
 }
 

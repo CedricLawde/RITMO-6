@@ -129,6 +129,8 @@ struct App {
     shot: Option<PathBuf>,
     frames: u32,
     requested: bool,
+    /// Shrink the 1.6x window once if the screen is too small for it.
+    fit: bool,
     _audio: Option<Audio>,
 }
 
@@ -137,6 +139,16 @@ impl eframe::App for App {
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             let r = self.state.running.load(Relaxed);
             self.state.running.store(!r, Relaxed);
+        }
+        if self.fit {
+            if let Some(screen) = ctx.input(|i| i.viewport().monitor_size) {
+                self.fit = false;
+                let s = (screen.x * 0.92 / (ui::W * ui::START_SCALE)).min(screen.y * 0.85 / (ui::H * ui::START_SCALE));
+                if s < 1.0 {
+                    let k = ui::START_SCALE * s.max(0.6);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(ui::W * k, ui::H * k)));
+                }
+            }
         }
         ui::draw(ctx, self.store.as_ref(), &self.state, &mut self.ui);
 
@@ -197,8 +209,9 @@ fn main() -> eframe::Result<()> {
             let (w, h) = s.split_once('x')?;
             Some([w.parse::<f32>().ok()?, h.parse::<f32>().ok()?])
         })
-        .unwrap_or([ui::W, ui::H]);
+        .unwrap_or([ui::W * ui::START_SCALE, ui::H * ui::START_SCALE]);
 
+    let fit_screen = shot.is_none() && !args.iter().any(|a| a == "--size");
     let open_module = args
         .iter()
         .position(|a| a == "--module")
@@ -269,6 +282,7 @@ fn main() -> eframe::Result<()> {
                 shot,
                 frames: 0,
                 requested: false,
+                fit: fit_screen,
                 _audio: audio,
             }))
         }),

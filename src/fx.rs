@@ -3,7 +3,7 @@
 //! All memory is allocated in `Fx::new` (never on the audio thread). No locks, no UI access.
 
 use crate::params::{
-    delay_division, delay_free_ms, fx_level_gain, phaser_hz, FxParam, DELAY_DIVISIONS, NUM_FX_BUSES,
+    delay_division, delay_free_ms, fx_level_gain, phaser_hz, spring_high_cut_hz, spring_low_cut_hz, FxParam, DELAY_DIVISIONS, NUM_FX_BUSES,
     NUM_FX_PARAMS,
 };
 use std::f32::consts::{PI, TAU};
@@ -524,10 +524,13 @@ struct Spring {
     lines: [SpringLine; 3],
     pre_hp: OnePole,
     post_lp: [OnePole; 2],
+    /// LOW CUT and HIGH CUT on the reverb return: two one-pole stages each (12 dB/octave).
+    cut_hp: [[OnePole; 2]; 2],
+    cut_lp: [[OnePole; 2]; 2],
     kick: f32,
     kick_phase: f32,
     rng: Rng,
-    s: [Smooth; 6],
+    s: [Smooth; 8],
 }
 
 impl Spring {
@@ -537,10 +540,12 @@ impl Spring {
             lines: [SpringLine::new(sr, 37.0), SpringLine::new(sr, 41.0), SpringLine::new(sr, 47.0)],
             pre_hp: OnePole::default(),
             post_lp: [OnePole::default(); 2],
+            cut_hp: [[OnePole::default(); 2]; 2],
+            cut_lp: [[OnePole::default(); 2]; 2],
             kick: 0.0,
             kick_phase: 0.0,
             rng: Rng(0x5B21_6001),
-            s: [Smooth::new(0.5), Smooth::new(0.4), Smooth::new(0.5), Smooth::new(0.3), Smooth::new(1.0), Smooth::new(0.6)],
+            s: [Smooth::new(0.5), Smooth::new(0.4), Smooth::new(0.5), Smooth::new(0.3), Smooth::new(1.0), Smooth::new(0.6), Smooth::new(0.0), Smooth::new(1.0)],
         }
     }
 
@@ -556,6 +561,8 @@ impl Spring {
         let drive = self.s[3].next(fv(v, FxParam::SpDrive), k);
         let mix = self.s[4].next(fv(v, FxParam::SpMix), k);
         let level = fx_level_gain(self.s[5].next(fv(v, FxParam::SpLevel), k));
+        let low_cut = self.s[6].next(fv(v, FxParam::SpLowCut), k);
+        let high_cut = self.s[7].next(fv(v, FxParam::SpHighCut), k);
 
         let mut input = 0.5 * (x[0] + x[1]);
         // KICK: a short, level-limited thump + rattle that excites the tank
@@ -580,7 +587,18 @@ impl Spring {
         let a_post = OnePole::coef(5500.0, self.sr);
         let wet_l = self.post_lp[0].lp(o[0] + 0.5 * o[2], a_post);
         let wet_r = self.post_lp[1].lp(o[1] - 0.5 * o[2], a_post);
-        let wet = [(wet_l * 1.4).tanh(), (wet_r * 1.4).tanh()];
+        let mut wet = [(wet_l * 1.4).tanh(), (wet_r * 1.4).tanh()];
+        // LOW CUT / HIGH CUT shape only the reverb, so it sits in the mix (dry part untouched)
+        let a_hp = OnePole::coef(spring_low_cut_hz(low_cut), self.sr);
+        let a_lp = OnePole::coef(spring_high_cut_hz(high_cut), self.sr);
+        for ch in 0..2 {
+            let mut y = wet[ch];
+            for st in 0..2 {
+                y = self.cut_hp[ch][st].hp(y, a_hp);
+                y = self.cut_lp[ch][st].lp(y, a_lp);
+            }
+            wet[ch] = y;
+        }
         [
             (x[0] * (1.0 - mix) + wet[0] * mix) * level,
             (x[1] * (1.0 - mix) + wet[1] * mix) * level,

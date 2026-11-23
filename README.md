@@ -16,7 +16,8 @@
 - Mixer with volume, pan, trig, mute, solo (ONE/ALL); stereo mix + 6 separate outputs
 - Internal tempo or host sync (1/8, 1/8T, 1/16, 1/32); MIDI keyboard control
 - **TEMPO DRIFT**, **SOUND DRIFT** and **SWING**; per-voice **NUDGE** (up to half a step early or late) and drift amount
-- **FX panel** behind the front plate (press FX): phaser, op-amp distortion, delay (TAPE / BBD / MOD, sync or free) and spring reverb with KICK; 4 sends per voice. The separate outputs stay dry.
+- **FX panel** behind the front plate (press FX): phaser, op-amp distortion, delay (TAPE / BBD / MOD, sync or free) and spring reverb with KICK; 4 sends per voice. The separate outputs stay dry (see [ROUTAGE.md](ROUTAGE.md) for the routing).
+- Spring reverb **LOW CUT / HIGH CUT**; the window opens 1.6x larger and can be resized (plugin too)
 
 ## Install / Installation
 Download the latest files from the **Releases** page:

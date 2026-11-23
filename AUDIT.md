@@ -1,3 +1,21 @@
+# Ritmo-6 v1.3.1 (2026-11-23)
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| MUTE acts on the Mix only | A muted voice still plays (and lights its lamp); it is left out of the stereo Mix together with its FX sends, while its separate output keeps playing. A voice routed to its own DAW track is therefore never doubled in the Mix. The standalone app (Mix only) behaves as before. | test `mute_leaves_the_mix_but_keeps_the_voice_output` |
+
+---
+
+# Ritmo-6 v1.3.0 (2026-11-23)
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| Spring LOW CUT / HIGH CUT | 12 dB/octave high-pass (20 Hz = off .. 1 kHz) and low-pass (1 kHz .. 20 kHz = off) on the reverb return only. New host parameters `sp_lowcut`, `sp_highcut`; defaults are off, so older projects and banks sound the same. | build; 18 tests pass; FX panel screenshot |
+| Window size | Standalone and plugin open at 1.6x (1344 x 784); the standalone shrinks once to fit a smaller screen. | screenshot 1344 x 784 |
+| Routing | Documented in ROUTAGE.md (each voice is in the Mix and on its own output; the separate outputs are dry, pre-pan, unaffected by MASTER VOL). | code review of `Engine::next_frame` and the plugin's output ports |
+
+---
+
 # Ritmo-6 v1.2.0 — FX expansion audit (2026-11-22)
 
 ## New in 1.2.0
@@ -11,6 +29,8 @@
 | SWING | 50 % (straight) to 75 %: every second 16th is pushed late. Applied on the grid, so it combines with TEMPO DRIFT and NUDGE. | `swing_delays_every_second_step` |
 | FX panel | The FX button turns the main plate over around a horizontal hinge (0.65 s, slow start, quick swing, small settle), showing the circuit board inside, then the effects on its back. Drawn in perspective; nothing on the turning plate can be clicked while it moves; no effect on the sound. | screenshots at 30 %, 47 % and 62 % of the turn |
 | Program icon | The person's RITMO·6 icon in the window title bar, the task bar and on `Ritmo-6.exe`. | build (Windows resource) |
+
+| Delay noise fix | The simulated tape/BBD hiss was injected inside the repeat loop, and the tape saturation and the 8-bit MOD loop had a gain at or above 1, so at full FEEDBACK/AGE a noise wash or buzz kept going on its own. Hiss now rides on the repeats only, proportional to their level; the loop gain stays under 1. | test `delay_at_full_feedback_dies_away_without_leftover_noise` (all 3 modes, FEEDBACK and AGE at max: below 5 % after 40 s) |
 
 ## Compatibility
 - Existing parameter IDs unchanged; new: `nudge`, `drshare`, `sph`, `sds`, `sdl`, `ssp` (per voice), `swing`, and the `ph_*`, `ds_*`, `dl_*`, `sp_*` FX parameters. VST3 class ID and CLAP ID unchanged.
