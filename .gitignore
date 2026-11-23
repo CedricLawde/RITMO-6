@@ -1,0 +1,26 @@
+# build output
+/target/
+/shots/
+*.pdb
+
+# release files go to GitHub Releases, not into the repository
+/dist/
+*.zip
+
+# private research material: decoded data and extracted binaries of the original plugin.
+# NEVER publish these (they belong to the original's author).
+/research/
+/tools/decode_se1.ps1
+/tools/extract_sems.ps1
+/tools/dump_modules.ps1
+/tools/map_voices.ps1
+/tools/extract_kits.ps1
+/tools/kits_to_rust.ps1
+
+# folder prepared for uploading to GitHub
+/publish/
+
+# internal research notes (describe how the original was decoded)
+/MECHANICS.md
+/mechanics.json
+/INSTALL.md

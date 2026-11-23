@@ -1,3 +1,13 @@
+# Ritmo-6 v1.3.2 (2026-11-23) — phaser analysis
+
+| Finding | Fix | Verified by |
+|---|---|---|
+| The phaser is a send effect, but its return held 50 % dry + 50 % phase-shifted signal, scaled by MIX (default 50 %). Added to the dry voice already in the Mix, that is 1.75 x dry + 0.25 x shifted at full send: the notches were only about 2.5 dB deep, hence the "timid" sound. | The return now carries only the phase-shifted signal (x MIX x LEVEL). Dry in the Mix + return at send 100 %, MIX 100 %, LEVEL 0 dB are equal, so the notches cancel completely. MIX default 100 %. | test `phaser_notches_cut_deep_against_the_dry_mix` (notch deeper than -20 dB on a 1 kHz tone) |
+| The sweep stopped at 1.6 kHz at the default DEPTH (4.5 kHz at maximum), below hats and cymbals. | Corner now 160 Hz to 10 kHz at full DEPTH (default 75 % reaches 3.6 kHz, notches up to about 9 kHz). | code review, same test |
+| Both channels moved almost together (11 degrees apart). | Right channel 36 degrees behind: the sweep moves across the stereo image. COLOR feedback up to 0.92 (was 0.8), default 45 %. | listening still to be done by the person |
+
+---
+
 # Ritmo-6 v1.3.1 (2026-11-23)
 
 | Change | Behaviour | Verified by |
