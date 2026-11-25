@@ -127,6 +127,14 @@ pub struct Engine {
     accent: f32,
     /// true for the first step after START (early voices play it at once)
     first_step: bool,
+    /// Pattern chain: the slot playing (None when the chain isn't playing), the slot that
+    /// comes next (drawn in advance in RANDOM mode, so an early NUDGE voice can read it),
+    /// the step inside the chained pattern (host sync) and whether to find the place in the
+    /// chain again from the host position (start, loop or jump).
+    chain_slot: Option<usize>,
+    chain_next: Option<usize>,
+    chain_step: usize,
+    chain_sync: bool,
     // per block
     host_active: bool,
     block_pos0: f64,
@@ -168,6 +176,10 @@ impl Engine {
             voice_step: [0; NUM_CH],
             accent: 0.5,
             first_step: true,
+            chain_slot: None,
+            chain_next: None,
+            chain_step: 0,
+            chain_sync: true,
             host_active: false,
             block_pos0: 0.0,
             beats_per_sample: 0.0,
@@ -274,6 +286,11 @@ impl Engine {
             }
         }
         self.frame_in_block = 0;
+        if !state.chain_active() {
+            self.chain_slot = None;
+            self.chain_next = None;
+            state.chain_slot.store(-1, Relaxed);
+        }
         state.host_driven.store(self.host_active, Relaxed);
         let bpm = if vals.sync { self.host_tempo as f32 } else { internal_bpm(vals.tempo) };
         state.bpm_bits.store(bpm.to_bits(), Relaxed);
@@ -294,11 +311,14 @@ impl Engine {
         state.cur_step.store(self.step as i32, Relaxed);
         let prog = state.program();
         let l = self.step_samples;
+        // last step of a chained pattern: what comes next is the first step of the next one
+        let boundary = self.chain_slot.is_some() && state.chain_active() && self.step + 1 >= state.length(prog);
+        let next_prog = if boundary { self.chain_peek_program(state) } else { prog };
         for ch in 0..NUM_CH {
             let vlen = state.voice_length(prog, ch);
             let step = self.voice_step[ch] % vlen;
             state.voice_step[ch].store(step as i8, Relaxed);
-            let next = (step + 1) % vlen;
+            let next = if boundary { 0 } else { (step + 1) % vlen };
             let nudge = vals.voices[ch].nudge.clamp(-1.0, 1.0) as f64;
             if nudge >= 0.0 {
                 let (cur, acc) = self.draw_step(state, prog, ch, step);
@@ -318,7 +338,7 @@ impl Engine {
                         self.play_step(state, vals, ch, cur, acc);
                     }
                 }
-                let (nx, acc) = self.draw_step(state, prog, ch, next);
+                let (nx, acc) = self.draw_step(state, next_prog, ch, next);
                 if nx > 0 {
                     self.queue(ch, (1.0 + nudge * 0.5) * l, nx, acc);
                 }
@@ -378,6 +398,96 @@ impl Engine {
         }
     }
 
+    /// A random slot index below k.
+    fn rand_index(&mut self, k: usize) -> usize {
+        ((self.rand() * k as f32) as usize).min(k.saturating_sub(1))
+    }
+
+    /// The slot that follows `cur` in the chain: left to right (back to the first after the
+    /// last), or in RANDOM mode any chained slot but the one just played.
+    fn chain_pick_after(&mut self, state: &SharedState, cur: Option<usize>) -> usize {
+        let k = state.chain_len().max(1);
+        if state.chain_random.load(Relaxed) && k > 1 {
+            loop {
+                let r = self.rand_index(k);
+                if Some(r) != cur {
+                    return r;
+                }
+            }
+        }
+        match cur {
+            Some(c) if c + 1 < k => c + 1,
+            _ => 0,
+        }
+    }
+
+    /// Play chain slot `slot` now: its program becomes the current one, the next slot is drawn.
+    fn chain_go(&mut self, state: &SharedState, slot: usize) {
+        self.chain_slot = Some(slot);
+        state.chain_slot.store(slot as i8, Relaxed);
+        if let Some(p) = state.chain_program(slot) {
+            state.program.store(p as u8, Relaxed);
+        }
+        self.chain_next = Some(self.chain_pick_after(state, Some(slot)));
+    }
+
+    /// The next slot (still valid if the chain was edited meanwhile).
+    fn chain_peek(&mut self, state: &SharedState) -> usize {
+        let k = state.chain_len();
+        match self.chain_next {
+            Some(n) if n < k => n,
+            _ => {
+                let cur = self.chain_slot.filter(|&c| c < k);
+                let n = self.chain_pick_after(state, cur);
+                self.chain_next = Some(n);
+                n
+            }
+        }
+    }
+
+    fn chain_peek_program(&mut self, state: &SharedState) -> usize {
+        let slot = self.chain_peek(state);
+        state.chain_program(slot).unwrap_or_else(|| state.program())
+    }
+
+    /// START with the chain on: the first slot (a random one in RANDOM mode).
+    fn chain_start(&mut self, state: &SharedState) {
+        let first = self.chain_pick_after(state, None);
+        let first = if state.chain_random.load(Relaxed) { first } else { 0 };
+        self.chain_go(state, first);
+    }
+
+    /// End of a chained pattern: on to the next slot.
+    fn chain_advance(&mut self, state: &SharedState) {
+        let next = self.chain_peek(state);
+        self.chain_go(state, next);
+    }
+
+    /// Host sync: find the slot and the step inside it for absolute host step `n`, so the
+    /// chain stays in place after a loop or a jump in the song (RANDOM: a random slot).
+    fn chain_locate(&mut self, state: &SharedState, n: i64) {
+        let k = state.chain_len();
+        if state.chain_random.load(Relaxed) {
+            let slot = self.rand_index(k);
+            self.chain_go(state, slot);
+            self.chain_step = n.rem_euclid(state.length(state.program()) as i64) as usize;
+            return;
+        }
+        let lens: Vec<i64> = (0..k).map(|i| state.length(state.chain_program(i).unwrap_or(0)) as i64).collect();
+        let total: i64 = lens.iter().sum::<i64>().max(1);
+        let mut r = n.rem_euclid(total);
+        for (i, l) in lens.iter().enumerate() {
+            if r < *l {
+                self.chain_go(state, i);
+                self.chain_step = r as usize;
+                return;
+            }
+            r -= l;
+        }
+        self.chain_go(state, 0);
+        self.chain_step = 0;
+    }
+
     fn clock(&mut self, state: &SharedState, vals: &Values) {
         let prog = state.program();
         let len = state.length(prog);
@@ -394,6 +504,7 @@ impl Engine {
                 // start, loop or jump: next step is the first one not yet passed
                 self.first_step = true;
                 self.nudged = [[NO_QUEUE; 2]; NUM_CH];
+                self.chain_sync = true;
                 self.host_next = pos.ceil() as i64;
                 if pos.fract() < 1e-6 {
                     self.host_next = pos.floor() as i64;
@@ -404,10 +515,31 @@ impl Engine {
                 if n.rem_euclid(128) == 0 {
                     self.new_drift_cycle(n);
                 }
-                self.step = n.rem_euclid(len as i64) as usize;
-                self.advance_voices(state, n, true);
+                if state.chain_active() {
+                    if self.chain_sync || self.chain_slot.is_none() {
+                        self.chain_locate(state, n);
+                        self.chain_sync = false;
+                    } else if self.chain_step >= state.length(state.program()) {
+                        // the pattern has ended: the next chained one starts on this step
+                        self.chain_advance(state);
+                        self.chain_step = 0;
+                    }
+                    self.step = self.chain_step;
+                    // each voice from the start of the chained pattern
+                    let prog = state.program();
+                    for ch in 0..NUM_CH {
+                        self.voice_step[ch] = self.chain_step % state.voice_length(prog, ch);
+                    }
+                } else {
+                    self.chain_sync = true;
+                    self.step = n.rem_euclid(len as i64) as usize;
+                    self.advance_voices(state, n, true);
+                }
                 self.host_next += 1;
                 self.fire(state, vals);
+                if self.chain_slot.is_some() && state.chain_active() {
+                    self.chain_step += 1;
+                }
             }
             self.was_running = false;
             return;
@@ -442,8 +574,27 @@ impl Engine {
                 if n.rem_euclid(128) == 0 {
                     self.new_drift_cycle(n);
                 }
-                self.step = if n == 0 { 0 } else { (self.step + 1) % len };
-                self.advance_voices(state, n, false);
+                let mut restart = false;
+                if n == 0 {
+                    if state.chain_active() {
+                        self.chain_start(state);
+                    }
+                    self.step = 0;
+                } else if self.step + 1 >= state.length(state.program()) {
+                    // end of the pattern: with the chain on, the next chained one starts
+                    if state.chain_active() {
+                        self.chain_advance(state);
+                        restart = true;
+                    }
+                    self.step = 0;
+                } else {
+                    self.step += 1;
+                }
+                if restart {
+                    self.voice_step = [0; NUM_CH];
+                } else {
+                    self.advance_voices(state, n, false);
+                }
                 self.abs_steps += 1;
                 self.grid_next += samples_per_step;
                 self.fire(state, vals);
@@ -1026,5 +1177,135 @@ mod tests {
         state.toggle_accent(0, 3, 4);
         assert!(state.step_on(0, 3, 4) && !state.accent_on(0, 3, 4));
     }
-}
 
+    /// Every step played over `steps` steps of the internal clock: (chain slot, program, step).
+    fn chain_trace(state: &SharedState, vals: &Values, steps: f64) -> Vec<(i8, usize, i32)> {
+        let mut e = Engine::new(48000.0);
+        state.running.store(true, Relaxed);
+        e.begin_block(state, vals, &Transport::default());
+        let nominal = 48000.0 / internal_steps_per_sec(vals.tempo) as f64;
+        let mut seen = Vec::new();
+        let mut hits = 0u32;
+        let total = |s: &SharedState| (0..NUM_CH).map(|c| s.hits[c].load(Relaxed)).sum::<u32>();
+        for _ in 0..(nominal * steps) as u64 {
+            let before = state.cur_step.load(Relaxed);
+            let prog_before = state.program();
+            e.next_frame(state, vals);
+            let now = state.cur_step.load(Relaxed);
+            if now != before || state.program() != prog_before || total(state) != hits {
+                hits = total(state);
+                let entry = (state.chain_slot.load(Relaxed), state.program(), now);
+                if seen.last() != Some(&entry) {
+                    seen.push(entry);
+                }
+            }
+        }
+        seen
+    }
+
+    fn chain_state() -> SharedState {
+        let state = empty_state();
+        // program 1: 4 steps, A on 1 · program 2: 8 steps, B on 1 · program 3: 4 steps, C on 1
+        // program 5: D on 1, placed after an empty slot (so never played)
+        for (prog, len, row) in [(0usize, 4usize, 0usize), (1, 8, 1), (2, 4, 2), (4, 16, 3)] {
+            state.set_length(prog, len);
+            state.set_step(prog, row, 0, true);
+        }
+        for (slot, prog) in [(0usize, 1u8), (1, 2), (2, 3), (4, 5)] {
+            state.chain[slot].store(prog, Relaxed);
+        }
+        state
+    }
+
+    #[test]
+    fn chain_plays_its_patterns_in_order_and_an_empty_slot_starts_it_again() {
+        let state = chain_state();
+        assert_eq!(state.chain_len(), 3);
+        assert!(!state.chain_active(), "off until CHAIN ON");
+        state.chain_on.store(true, Relaxed);
+        let mut vals = defaults();
+        vals.tempo = 6.1;
+        // two passes: 2 x (4 + 8 + 4) = 32 steps
+        let h = count_hits(&state, &vals, 31.5);
+        assert_eq!(h[0], 2, "A (program 1)");
+        assert_eq!(h[1], 2, "B (program 2)");
+        assert_eq!(h[2], 2, "C (program 3)");
+        assert_eq!(h[3], 0, "D (program 5, after the empty slot)");
+        // the order and where each pattern starts
+        state.running.store(false, Relaxed);
+        let trace = chain_trace(&state, &vals, 31.5);
+        let starts: Vec<(i8, usize)> = trace.iter().filter(|t| t.2 == 0).map(|t| (t.0, t.1)).collect();
+        assert_eq!(starts, vec![(0, 0), (1, 1), (2, 2), (0, 0), (1, 1), (2, 2)]);
+        // every pattern plays to its own length
+        let longest = trace.iter().filter(|t| t.1 == 1).map(|t| t.2).max().unwrap();
+        assert_eq!(longest, 7);
+    }
+
+    #[test]
+    fn chain_off_keeps_one_pattern() {
+        let state = chain_state();
+        let mut vals = defaults();
+        vals.tempo = 6.1;
+        let h = count_hits(&state, &vals, 31.5);
+        assert_eq!(h, [8, 0, 0, 0, 0, 0], "program 1 (4 steps) looping");
+        assert_eq!(state.chain_slot.load(Relaxed), -1);
+    }
+
+    #[test]
+    fn random_chain_mixes_the_chosen_patterns_without_playing_one_twice_in_a_row() {
+        let state = chain_state();
+        state.chain_on.store(true, Relaxed);
+        state.chain_random.store(true, Relaxed);
+        let mut vals = defaults();
+        vals.tempo = 6.1;
+        let trace = chain_trace(&state, &vals, 400.0);
+        let order: Vec<i8> = trace.iter().filter(|t| t.2 == 0).map(|t| t.0).collect();
+        assert!(order.len() > 30, "{} patterns", order.len());
+        assert!(order.windows(2).all(|w| w[0] != w[1]), "a pattern twice in a row: {order:?}");
+        for slot in 0..3 {
+            assert!(order.contains(&slot), "slot {slot} never played");
+        }
+        assert!(!order.contains(&4), "slot 5 is after the empty slot");
+        assert_ne!(order[..12], [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2], "not random");
+    }
+
+    #[test]
+    fn host_sync_finds_its_place_in_the_chain() {
+        let state = chain_state();
+        state.chain[2].store(0, Relaxed); // chain: program 1 (4 steps), program 2 (8 steps)
+        state.chain_on.store(true, Relaxed);
+        let mut vals = defaults();
+        vals.sync = true;
+        vals.tempo = 6.0; // 1/16: 4 steps per beat
+        for (beats, slot, prog, step) in [(3.5, 0i8, 0usize, 2i32), (5.0, 1, 1, 4), (0.0, 0, 0, 0), (2.75, 1, 1, 7)] {
+            let mut e = Engine::new(48000.0);
+            let t = Transport { playing: true, pos_beats: Some(beats), tempo: Some(120.0) };
+            e.begin_block(&state, &vals, &t);
+            e.next_frame(&state, &vals);
+            // song step = beats x 4; the chain is 12 steps long
+            assert_eq!(state.chain_slot.load(Relaxed), slot, "at beat {beats}");
+            assert_eq!(state.program(), prog, "at beat {beats}");
+            assert_eq!(state.cur_step.load(Relaxed), step, "at beat {beats}");
+        }
+    }
+
+    #[test]
+    fn chain_is_kept_in_files_and_old_files_have_none() {
+        let state = chain_state();
+        state.chain_on.store(true, Relaxed);
+        state.chain_random.store(true, Relaxed);
+        let d = state.snapshot();
+        let copy = SharedState::default();
+        copy.restore(&serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap());
+        assert_eq!(copy.chain_len(), 3);
+        assert_eq!(copy.chain_program(4), Some(4));
+        assert!(copy.chain_on.load(Relaxed) && copy.chain_random.load(Relaxed));
+        let old: crate::state::PatternData = serde_json::from_str(
+            r#"{"steps":[[1,0,0,0,0,0]],"lengths":[16],"program":0,"midi_channel":0,"keyb_ctrl":true}"#,
+        )
+        .unwrap();
+        copy.restore(&old);
+        assert_eq!(copy.chain_len(), 0);
+        assert!(!copy.chain_active());
+    }
+}

@@ -14,6 +14,9 @@ pub const PAD_LENGTH: u8 = 4;
 pub const NUM_PAD_MODES: u8 = 5;
 pub const PAD_MODE_NAMES: [&str; 5] = ["NOTE", "MULTI", "ACCENT", "PROB", "LENGTH"];
 
+/// Slots of the pattern chain (CHAIN panel behind the name plate).
+pub const NUM_CHAIN: usize = 16;
+
 /// Chance of a step, by its 2-bit code: 0 = always (the default, so older files play as before).
 pub const PROB_PERCENT: [u32; 4] = [100, 75, 50, 25];
 
@@ -56,6 +59,15 @@ pub struct SharedState {
     pub kit: AtomicU8,
     /// KICK button of the spring reverb (taken by the audio thread).
     pub spring_kick: AtomicBool,
+    /// Pattern chain: program number (1..=16) in each slot, 0 = empty. The chain plays the
+    /// slots from the first one up to the first empty slot, then starts again.
+    pub chain: [AtomicU8; NUM_CHAIN],
+    /// CHAIN ON / OFF.
+    pub chain_on: AtomicBool,
+    /// CHAIN RANDOM: the chained patterns in random order instead of left to right.
+    pub chain_random: AtomicBool,
+    /// Slot playing now, -1 when the chain isn't playing (for the panel).
+    pub chain_slot: AtomicI8,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -81,6 +93,13 @@ pub struct PatternData {
     pub voice_lengths: Vec<Vec<u8>>,
     #[serde(default)]
     pub pad_mode: Option<u8>,
+    /// Pattern chain (2.2): program numbers 1..=16 per slot, 0 = empty. Missing in older files.
+    #[serde(default)]
+    pub chain: Vec<u8>,
+    #[serde(default)]
+    pub chain_on: bool,
+    #[serde(default)]
+    pub chain_random: bool,
 }
 
 impl Default for SharedState {
@@ -106,6 +125,10 @@ impl Default for SharedState {
             bpm_bits: AtomicU32::new(120f32.to_bits()),
             kit: AtomicU8::new(0),
             spring_kick: AtomicBool::new(false),
+            chain: std::array::from_fn(|_| AtomicU8::new(0)),
+            chain_on: AtomicBool::new(false),
+            chain_random: AtomicBool::new(false),
+            chain_slot: AtomicI8::new(-1),
         };
         s.load_factory();
         s
@@ -290,6 +313,9 @@ impl SharedState {
                 .map(|p| (0..NUM_CH).map(|c| self.voice_lengths[p][c].load(Relaxed)).collect())
                 .collect(),
             pad_mode: Some(self.pad_mode.load(Relaxed)),
+            chain: self.chain.iter().map(|c| c.load(Relaxed)).collect(),
+            chain_on: self.chain_on.load(Relaxed),
+            chain_random: self.chain_random.load(Relaxed),
         }
     }
 
@@ -319,6 +345,34 @@ impl SharedState {
         self.kit.store(d.kit.min(16), Relaxed);
         let mode = d.pad_mode.unwrap_or(if d.multiply_mode { PAD_MULTI } else { PAD_NOTE });
         self.pad_mode.store(mode.min(NUM_PAD_MODES - 1), Relaxed);
+        for (i, slot) in self.chain.iter().enumerate() {
+            slot.store(d.chain.get(i).copied().unwrap_or(0).min(NUM_PROGS as u8), Relaxed);
+        }
+        self.chain_on.store(d.chain_on, Relaxed);
+        self.chain_random.store(d.chain_random, Relaxed);
+    }
+
+    /// Program in a chain slot (0-based), None when the slot is empty.
+    pub fn chain_program(&self, slot: usize) -> Option<usize> {
+        match self.chain.get(slot).map(|c| c.load(Relaxed)).unwrap_or(0) {
+            0 => None,
+            n => Some((n as usize - 1).min(NUM_PROGS - 1)),
+        }
+    }
+
+    /// How many slots the chain plays: those before the first empty slot.
+    pub fn chain_len(&self) -> usize {
+        (0..NUM_CHAIN).take_while(|&i| self.chain_program(i).is_some()).count()
+    }
+
+    /// The chain is switched on and has at least one pattern.
+    pub fn chain_active(&self) -> bool {
+        self.chain_on.load(Relaxed) && self.chain_len() > 0
+    }
+
+    /// A program with no step on in any row.
+    pub fn program_empty(&self, prog: usize) -> bool {
+        (0..NUM_CH).all(|c| self.steps[prog][c].load(Relaxed) == 0)
     }
 
     /// Whether a row may sound given mute flags and the ONE (solo) buttons.

@@ -34,12 +34,12 @@
   .legend { position: absolute; left: 1210px; top: 130px; width: 675px; }
   .legend h2, .box h2 { font-family: "Bahnschrift"; font-size: 22px; letter-spacing: 3px; color: #b8521a;
     margin-bottom: 6px; }
-  .item { display: flex; gap: 11px; margin-bottom: 3px; font-size: 15px; line-height: 19px; }
+  .item { display: flex; gap: 11px; margin-bottom: 2px; font-size: 14px; line-height: 17.5px; }
   .item b { color: #1d1b19; }
   .num { flex: 0 0 26px; height: 26px; border-radius: 50%; background: #ef7d2a; color: #fff; text-align: center;
     font-family: "Bahnschrift"; font-weight: 700; line-height: 26px; font-size: 14px; margin-top: -2px; }
 
-  .module { position: absolute; left: 1210px; top: 744px; width: 675px; height: 320px; display: flex; gap: 16px; }
+  .module { position: absolute; left: 1210px; top: 756px; width: 675px; height: 320px; display: flex; gap: 16px; }
   .crop { flex: 0 0 112px; height: 316px; overflow: hidden; border-radius: 8px; position: relative;
     box-shadow: 0 8px 14px rgba(60,40,20,.35); }
   .knobs { font-size: 14.5px; line-height: 18.5px; }
@@ -69,7 +69,7 @@
   <div class="title">RITMO<span>·</span>6</div>
   <div class="brand">GERANIUM</div>
   <div class="sub">6-voice analog-style drum machine — user manual</div>
-  <div class="formats"><div class="ver">v2.0.0</div><div>VST3</div><div>CLAP</div><div>STANDALONE</div></div>
+  <div class="formats"><div class="ver">v2.2.0</div><div>VST3</div><div>CLAP</div><div>STANDALONE</div></div>
 
   <div class="panel">
     <img src="panel.png">
@@ -87,7 +87,9 @@
     <div class="mk" style="left:81%;top:73%">12</div>
     <div class="mk" style="left:34.4%;top:88%">13</div>
     <div class="mk" style="left:73.9%;top:64%">14</div>
-    <div class="mk" style="left:74.6%;top:78%">15</div>
+    <div class="mk" style="left:70.4%;top:88.2%">15</div>
+    <div class="mk" style="left:70.4%;top:80%">16</div>
+    <div class="mk" style="left:98.4%;top:10.6%">⚙</div>
   </div>
 
   <div class="legend">
@@ -107,6 +109,8 @@
     <div class="item"><div class="num">13</div><div><b>TEMPO DRIFT</b> — 50 %: steady; towards 0 % steps randomly drag behind, towards 100 % they rush ahead. <b>SOUND DRIFT</b> — every hit sounds a little different. <b>SWING</b> — 50 % (straight) to 75 %: every second 16th falls late.</div></div>
     <div class="item"><div class="num">14</div><div><b>NUDGE</b> — moves a voice up to ½ step early or late (claps just before the snare: the disco groove). <b>DRIFT</b> — how much of SOUND DRIFT this voice gets.</div></div>
     <div class="item"><div class="num">15</div><div><b>FX</b> — the front plate turns over on its hinge and shows the effects panel on its back.</div></div>
+    <div class="item"><div class="num">⚙</div><div><b>SETUP</b> (v2.1) — window size <b>60 · 80 · 100 · 130 · 160 %</b>; in the standalone, <b>Audio</b> output (WASAPI or ASIO) and <b>MIDI</b> inputs, kept for the next start.</div></div>
+    <div class="item"><div class="num">16</div><div><b>CHAIN</b> (v2.2) — the RITMO·6 plate turns over to show the pattern chain: 16 slots (click or wheel = a program, right-click = empty), played up to the first empty slot, then looped. <b>ON / OFF</b> · <b>RANDOM</b> random order · <b>TAKE YOUR PICK</b> 2 to 16 patterns at random, no gap.</div></div>
   </div>
 
   <div class="module">
@@ -143,7 +147,7 @@
       Copy <b>Ritmo-6.vst3</b> to <code>C:\Program Files\Common Files\VST3</code>,
       then rescan plugins in your DAW: it shows up under the vendor <b>Geranium</b>.<br>
       <span class="small">Also: <b>Ritmo-6.clap</b> and the standalone app <b>Ritmo-6.exe</b>.
-      6 separate outputs A–F (dry, no effects) + stereo mix with effects. <b>Resizable window</b>: drag the bottom-right corner.</span>
+      6 separate outputs A–F (dry, no effects) + stereo mix with effects. <b>Window size</b>: SETUP menu (⚙).</span>
     </div>
   </div>
 </body>

@@ -7,7 +7,8 @@ use crate::params::{
     FILTER_HP_THRESHOLD, FX_BUS_NAMES, FX_BUS_SHORT, NUM_CH, NUM_FX_BUSES, NUM_KIT_CHOICES, NUM_STEPS,
     SYNC_NAMES, VOICE_LETTERS,
 };
-use crate::state::{SharedState, NUM_PAD_MODES, PAD_ACCENT, PAD_LENGTH, PAD_MODE_NAMES, PAD_MULTI, PAD_NOTE, PAD_PROB};
+use crate::setup::{SetupHost, SetupUi};
+use crate::state::{NUM_CHAIN, SharedState, NUM_PAD_MODES, PAD_ACCENT, PAD_LENGTH, PAD_MODE_NAMES, PAD_MULTI, PAD_NOTE, PAD_PROB};
 use egui::{pos2, vec2, Align2, Color32, FontId, Id, Pos2, Rect, Response, Sense, Shape, Stroke};
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -53,6 +54,14 @@ pub struct UiState {
     kick_time: f64,
     /// A LOAD / SAVE file dialog running on its own thread (see bank.rs).
     dialog: Option<bank::DialogTask>,
+    /// The SETUP window (window size; audio and MIDI devices in the standalone app).
+    pub setup: SetupUi,
+    /// The CHAIN panel behind the name plate is open (or opening); chain_p is its flip,
+    /// 0 = name plate, 1 = chain panel.
+    pub chain_open: bool,
+    pub chain_p: f32,
+    /// Holds the CHAIN flip at one point (for pictures).
+    pub chain_freeze: Option<f32>,
 }
 
 impl Default for UiState {
@@ -80,6 +89,10 @@ impl Default for UiState {
             step_time: -10.0,
             kick_time: -10.0,
             dialog: None,
+            setup: SetupUi::default(),
+            chain_open: false,
+            chain_p: 0.0,
+            chain_freeze: None,
         }
     }
 }
@@ -107,6 +120,9 @@ struct G {
     c: f32,
     sn: f32,
     live: bool,
+    /// The hinge (design units): the main plate's, or the name plate's for the CHAIN panel.
+    hx: f32,
+    hy: f32,
 }
 
 /// The hinge of the fold-out panel: a horizontal line across the middle of the main plate.
@@ -117,7 +133,7 @@ const EYE: f32 = 1600.0;
 
 impl G {
     fn new(s: f32, o: Pos2) -> Self {
-        G { s, o, c: 1.0, sn: 0.0, live: true }
+        G { s, o, c: 1.0, sn: 0.0, live: true, hx: HINGE_X, hy: HINGE_Y }
     }
     fn shifted(self, dx: f32) -> Self {
         G { o: pos2(self.o.x + dx * self.s, self.o.y), ..self }
@@ -126,13 +142,17 @@ impl G {
     fn tilted(self, c: f32, sn: f32) -> Self {
         G { c, sn, live: false, ..self }
     }
+    /// Tilted around another hinge (the name plate's, for the CHAIN panel).
+    fn tilted_about(self, c: f32, sn: f32, hx: f32, hy: f32) -> Self {
+        G { c, sn, live: false, hx, hy, ..self }
+    }
     /// A point of the panel, w design units behind its surface, seen in perspective.
     fn p3(&self, x: f32, y: f32, w: f32) -> Pos2 {
-        let d = y - HINGE_Y;
+        let d = y - self.hy;
         let yy = d * self.c - w * self.sn;
         let z = d * self.sn + w * self.c;
         let k = EYE / (EYE - z);
-        pos2(self.o.x + (HINGE_X + (x - HINGE_X) * k) * self.s, self.o.y + (HINGE_Y + yy * k) * self.s)
+        pos2(self.o.x + (self.hx + (x - self.hx) * k) * self.s, self.o.y + (self.hy + yy * k) * self.s)
     }
     fn p(&self, x: f32, y: f32) -> Pos2 {
         if self.sn == 0.0 && self.c == 1.0 {
@@ -159,16 +179,16 @@ impl G {
     }
 }
 
-pub fn draw(ctx: &egui::Context, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState) {
+pub fn draw(ctx: &egui::Context, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState, host: &mut dyn SetupHost) {
     egui::CentralPanel::default()
         .frame(egui::Frame::default().fill(BG))
-        .show(ctx, |ui| draw_in(ui, access, state, st));
+        .show(ctx, |ui| draw_in(ui, access, state, st, host));
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
 }
 
-/// The whole panel inside a given area, scaled to fit it (the plugin window uses this with
-/// its resize corner).
-pub fn draw_in(ui: &mut egui::Ui, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState) {
+/// The whole panel inside a given area, scaled to fit it. `host` is where the panel lives
+/// (plugin or standalone app): the SETUP window asks it for window sizes and devices.
+pub fn draw_in(ui: &mut egui::Ui, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState, host: &mut dyn SetupHost) {
     let ctx = ui.ctx().clone();
     // A plugin window gets a fresh drawing context each time it is opened, while this state
     // lives on: pictures loaded into the previous context don't exist in the new one (the case
@@ -210,6 +230,17 @@ pub fn draw_in(ui: &mut egui::Ui, access: &dyn ParamAccess, state: &SharedState,
                     st.fx_p = if st.fx_open { (st.fx_p + step).min(1.0) } else { (st.fx_p - step).max(0.0) };
                 }
             }
+            {
+                let step = dt / FLIP_SECS;
+                st.chain_p = match st.chain_freeze {
+                    Some(f) => f.clamp(0.0, 1.0),
+                    None if st.chain_open => (st.chain_p + step).min(1.0),
+                    None => (st.chain_p - step).max(0.0),
+                };
+                if st.chain_p > 0.0 && st.chain_p < 1.0 {
+                    ctx.request_repaint();
+                }
+            }
             draw_case(ui, g, st);
             if st.fx_p <= 0.0 {
                 draw_main(ui, g, access, state, st, now);
@@ -246,6 +277,7 @@ pub fn draw_in(ui: &mut egui::Ui, access: &dyn ParamAccess, state: &SharedState,
                     Color32::from_rgb(255, 200, 120),
                 );
             }
+            crate::setup::draw(&ctx, g.r(0.0, 0.0, W, H), g.s, &mut st.setup, host);
         }
     }
     ctx.request_repaint_after(std::time::Duration::from_millis(30));
@@ -861,6 +893,7 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
     text(ui, g, 638.0, 61.0, "AMOUNT", 4.5, INK_DIM);
     let p = ui.painter();
     p.line_segment([g.p(621.0, 70.0), g.p(621.0, 302.0)], Stroke::new(g.l(1.0), Color32::from_rgb(40, 41, 44)));
+    chain_button(ui, g, state, st);
     fx_button(ui, g, st);
 
     // master volume
@@ -1181,6 +1214,9 @@ fn draw_row(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, prog
 
 fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState) {
     let now = ui.input(|i| i.time);
+    if st.chain_p > 0.0 {
+        chain_area(ui, g, state, st, now);
+    } else {
     // name plate
     let plate = g.r(590.0, 40.0, 728.0, 182.0);
     vgrad(ui, plate, Color32::from_rgb(240, 232, 212), Color32::from_rgb(214, 202, 176));
@@ -1220,6 +1256,8 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
     }
     text(ui, g, 626.0, 168.0, "LOAD", 8.0, Color32::from_rgb(50, 30, 16));
     text(ui, g, 692.0, 168.0, "SAVE", 8.0, Color32::from_rgb(50, 30, 16));
+    setup_button(ui, g, st);
+    }
 
     // MIDI channel display
     let midi = g.r(590.0, 188.0, 728.0, 252.0);
@@ -1282,6 +1320,248 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
         if resp.on_hover_text(format!("Open sound module {}", VOICE_LETTERS[ch])).clicked() {
             st.open_module = Some(ch);
         }
+    }
+}
+
+/// The CHAIN button (above FX): turns the name plate over to show the pattern chain behind it.
+/// Its lamp is lit while the chain is ON.
+fn chain_button(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState) {
+    let r = g.r(604.0, 382.0, 650.0, 402.0);
+    let resp = ui.interact(r, Id::new("chain_button"), g.sense(Sense::click()));
+    fill(ui, g, 604.0, 384.0, 650.0, 404.0, 3.0, Color32::from_black_alpha(150));
+    fill(ui, g, 604.0, 382.0, 650.0, 402.0, 3.0, Color32::from_rgb(20, 20, 22));
+    let (top, bot) = if resp.is_pointer_button_down_on() {
+        (Color32::from_rgb(170, 70, 30), Color32::from_rgb(200, 96, 44))
+    } else if resp.hovered() {
+        (Color32::from_rgb(250, 140, 70), Color32::from_rgb(200, 90, 40))
+    } else {
+        (Color32::from_rgb(232, 120, 56), Color32::from_rgb(180, 76, 30))
+    };
+    vgrad_d(ui, g, 607.0, 385.0, 647.0, 399.0, top, bot);
+    text(ui, g, 620.0, 372.0, "CHAIN", 8.5, ORANGE_HI);
+    let lit = state.chain_on.load(Relaxed);
+    ui.painter().circle_filled(g.p(644.0, 372.0), g.l(3.0), if lit { RED_LED } else { Color32::from_rgb(70, 20, 18) });
+    let tip = if st.chain_open { "Close the pattern chain" } else { "Pattern chain: play several programs one after another (lamp: chain ON)" };
+    if resp.on_hover_text(tip).clicked() {
+        st.chain_open = !st.chain_open;
+        st.open_module = None;
+    }
+}
+
+const PLATE_X0: f32 = 590.0;
+const PLATE_Y0: f32 = 40.0;
+const PLATE_X1: f32 = 728.0;
+const PLATE_Y1: f32 = 182.0;
+const PLATE_TOP: Color32 = Color32::from_rgb(240, 232, 212);
+const PLATE_BOT: Color32 = Color32::from_rgb(214, 202, 176);
+const PLATE_INK: Color32 = Color32::from_rgb(60, 36, 20);
+
+/// The name plate's place: the plate itself, the chain panel on its back, or the plate turning
+/// over around its middle (0.65 s, like the FX panel).
+fn chain_area(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, now: f64) {
+    if st.chain_p >= 1.0 {
+        chain_panel(ui, g, state, st, now);
+        return;
+    }
+    // the recess behind the turning plate
+    fill(ui, g, PLATE_X0, PLATE_Y0, PLATE_X1, PLATE_Y1, 3.0, Color32::from_rgb(12, 12, 14));
+    let th = flip_angle(st.chain_p, st.chain_open);
+    let (c, sn) = (th.cos(), th.sin());
+    let (hx, hy) = ((PLATE_X0 + PLATE_X1) / 2.0, (PLATE_Y0 + PLATE_Y1) / 2.0);
+    if c >= 0.0 {
+        plate_front_face(ui, g.tilted_about(c, sn, hx, hy));
+    } else {
+        chain_panel(ui, g.tilted_about(-c, -sn, hx, hy), state, st, now);
+    }
+}
+
+/// The name plate as seen while it turns (its look; the controls work once it is flat).
+fn plate_front_face(ui: &egui::Ui, g: G) {
+    vgrad_d(ui, g, PLATE_X0, PLATE_Y0, PLATE_X1, PLATE_Y1, PLATE_TOP, PLATE_BOT);
+    text(ui, g, 659.0, 60.0, "GERANIUM", 10.0, PLATE_INK);
+    text(ui, g, 659.0, 71.0, "RHYTHM  SYNTH", 6.5, Color32::from_rgb(90, 60, 36));
+    text(ui, g, 659.0, 88.0, "RITMO · 6", 22.0, Color32::from_rgb(150, 24, 18));
+    fill(ui, g, 628.0, 108.0, 690.0, 128.0, 2.0, Color32::from_rgb(30, 4, 4));
+    for x in [626.0, 692.0] {
+        ui.painter().circle_filled(g.p(x, 148.0), g.l(8.0), Color32::from_rgb(28, 30, 32));
+    }
+}
+
+/// Chain slots: 4 rows of 4, read left to right like the mock-up.
+const CHAIN_X0: f32 = 600.0;
+const CHAIN_DX: f32 = 32.0;
+const CHAIN_W: f32 = 23.0;
+const CHAIN_Y0: f32 = 49.0;
+const CHAIN_DY: f32 = 22.0;
+const CHAIN_H: f32 = 13.0;
+
+fn chain_slot_rect(i: usize) -> (f32, f32) {
+    (CHAIN_X0 + (i % 4) as f32 * CHAIN_DX, CHAIN_Y0 + (i / 4) as f32 * CHAIN_DY)
+}
+
+/// The back of the name plate: 16 chain slots joined by the orange line, ON / OFF, RANDOM and
+/// TAKE YOUR PICK. Drawn the same flat or turning (only flat can be clicked).
+fn chain_panel(ui: &mut egui::Ui, g: G, state: &SharedState, st: &mut UiState, now: f64) {
+    let orange = Color32::from_rgb(236, 132, 58);
+    vgrad_d(ui, g, PLATE_X0, PLATE_Y0, PLATE_X1, PLATE_Y1, PLATE_TOP, PLATE_BOT);
+    let edge = Stroke::new(g.l(2.0), Color32::from_rgb(90, 62, 34));
+    let corners = [g.p(PLATE_X0, PLATE_Y0), g.p(PLATE_X1, PLATE_Y0), g.p(PLATE_X1, PLATE_Y1), g.p(PLATE_X0, PLATE_Y1)];
+    for k in 0..4 {
+        ui.painter().line_segment([corners[k], corners[(k + 1) % 4]], edge);
+    }
+    // the line that runs through the chain, row after row
+    let line = Stroke::new(g.l(1.3), orange);
+    let (xl, xr) = (CHAIN_X0 - 5.0, CHAIN_X0 + 3.0 * CHAIN_DX + CHAIN_W + 5.0);
+    for r in 0..4 {
+        let yc = CHAIN_Y0 + r as f32 * CHAIN_DY + CHAIN_H / 2.0;
+        ui.painter().line_segment([g.p(xl, yc), g.p(xr, yc)], line);
+        if r < 3 {
+            let gap = CHAIN_Y0 + r as f32 * CHAIN_DY + CHAIN_H + (CHAIN_DY - CHAIN_H) / 2.0;
+            let yn = yc + CHAIN_DY;
+            ui.painter().add(Shape::line(vec![g.p(xr, yc), g.p(xr, gap), g.p(xl, gap), g.p(xl, yn)], line));
+        }
+    }
+    let len = state.chain_len();
+    let playing = state.chain_slot.load(Relaxed);
+    let on = state.chain_on.load(Relaxed);
+    for i in 0..NUM_CHAIN {
+        let (x, y) = chain_slot_rect(i);
+        let resp = ui.interact(g.r(x, y, x + CHAIN_W, y + CHAIN_H), Id::new(("chain_slot", i)), g.sense(Sense::click()));
+        let here = on && playing == i as i8;
+        if here {
+            fill(ui, g, x - 1.5, y - 1.5, x + CHAIN_W + 1.5, y + CHAIN_H + 1.5, 2.5, ORANGE_HI);
+        } else if resp.hovered() {
+            fill(ui, g, x - 1.0, y - 1.0, x + CHAIN_W + 1.0, y + CHAIN_H + 1.0, 2.0, Color32::from_rgb(150, 110, 80));
+        }
+        fill(ui, g, x, y, x + CHAIN_W, y + CHAIN_H, 1.5, Color32::from_rgb(18, 18, 20));
+        let prog = state.chain_program(i);
+        if let Some(p) = prog {
+            // slots after the first empty one aren't played: dimmed
+            let col = if i < len { RED_LED } else { Color32::from_rgb(110, 34, 28) };
+            text(ui, g, x + CHAIN_W / 2.0, y + CHAIN_H / 2.0, &format!("{:02}", p + 1), 8.0, col);
+        }
+        if !g.live {
+            continue;
+        }
+        let cur = state.chain[i].load(Relaxed);
+        let mut new = None;
+        if resp.clicked() {
+            new = Some((cur + 1) % 17);
+        } else if resp.secondary_clicked() {
+            new = Some(0);
+        } else if resp.hovered() {
+            let d = ui.input(|i| i.raw_scroll_delta.y);
+            if d > 0.0 {
+                new = Some((cur + 1) % 17);
+            } else if d < 0.0 {
+                new = Some((cur + 16) % 17);
+            }
+        }
+        let tip = match prog {
+            Some(p) => format!("Slot {}: program {:02}. Click or wheel: another program · right-click: empty.\nThe chain plays from slot 1 up to the first empty slot, then starts again.", i + 1, p + 1),
+            None => format!("Slot {}: empty. Click or wheel: choose a program.\nThe chain plays from slot 1 up to the first empty slot, then starts again.", i + 1),
+        };
+        resp.on_hover_text(tip);
+        if let Some(v) = new {
+            state.chain[i].store(v, Relaxed);
+        }
+    }
+    // buttons
+    let random = state.chain_random.load(Relaxed);
+    let buttons: [(f32, f32, &str, Option<bool>); 3] =
+        [(596.0, 626.0, "ON / OFF", Some(on)), (630.0, 662.0, "RANDOM", Some(random)), (666.0, 722.0, "TAKE YOUR PICK", None)];
+    let mut pressed = [false; 3];
+    for (k, (x0, x1, name, lit)) in buttons.iter().enumerate() {
+        let (y0, y1) = (139.0, 154.0);
+        let resp = ui.interact(g.r(*x0, y0, *x1, y1), Id::new(("chain_btn", k)), g.sense(Sense::click()));
+        let lit = lit.unwrap_or(false);
+        let (top, bot) = if lit {
+            (Color32::from_rgb(255, 176, 96), Color32::from_rgb(244, 132, 60))
+        } else if resp.hovered() {
+            (Color32::from_rgb(246, 140, 76), Color32::from_rgb(214, 100, 46))
+        } else {
+            (Color32::from_rgb(232, 120, 58), Color32::from_rgb(196, 88, 38))
+        };
+        fill(ui, g, *x0, y0 + 1.0, *x1, y1 + 1.0, 2.0, Color32::from_black_alpha(90));
+        vgrad_d(ui, g, *x0, y0, *x1, y1, top, bot);
+        text(ui, g, (x0 + x1) / 2.0, (y0 + y1) / 2.0, name, 5.6, Color32::from_rgb(34, 18, 10));
+        if k < 2 {
+            ui.painter().circle_filled(g.p((x0 + x1) / 2.0, y1 + 5.5), g.l(1.8), if lit { RED_LED } else { Color32::from_rgb(120, 60, 50) });
+        }
+        let tip = match k {
+            0 => "ON / OFF: play the chain (the lamp is lit while it is on)",
+            1 => "RANDOM: play the chained patterns in random order (never the same twice in a row)",
+            _ => "TAKE YOUR PICK: RITMO-6 fills the chain with 2 to 16 patterns at random, with no gap",
+        };
+        if resp.on_hover_text(tip).clicked() {
+            pressed[k] = true;
+        }
+    }
+    if pressed[0] {
+        let v = !on;
+        state.chain_on.store(v, Relaxed);
+        let msg = if !v {
+            "Chain off".to_string()
+        } else if len == 0 {
+            "Chain on: put a program in slot 1 to start it".to_string()
+        } else {
+            format!("Chain on: {len} pattern{}", if len > 1 { "s" } else { "" })
+        };
+        say(st, Some(msg), now);
+    }
+    if pressed[1] {
+        state.chain_random.store(!random, Relaxed);
+        say(st, Some(if random { "Chain in order" } else { "Chain in random order" }.into()), now);
+    }
+    if pressed[2] {
+        let n = take_your_pick(state, st);
+        say(st, Some(format!("Take your pick: {n} patterns in the chain")), now);
+    }
+    text(ui, g, 659.0, 170.0, "PATTERN  CHAIN", 6.5, PLATE_INK);
+}
+
+/// TAKE YOUR PICK: 2 to 16 slots from the first one, each a program drawn at random among the
+/// programs that have notes (any program if none has), never twice the same side by side when
+/// there is a choice; the slots after them are emptied, so there is never a gap.
+fn take_your_pick(state: &SharedState, st: &mut UiState) -> usize {
+    let n = 2 + (st.rand15() % 15) as usize;
+    let mut pool: Vec<u8> = (0..16).filter(|&p| !state.program_empty(p)).map(|p| p as u8 + 1).collect();
+    if pool.is_empty() {
+        pool = (1..=16).collect();
+    }
+    let mut prev = 0u8;
+    for i in 0..NUM_CHAIN {
+        let v = if i < n {
+            let mut v = pool[st.rand15() as usize % pool.len()];
+            while pool.len() > 1 && v == prev {
+                v = pool[st.rand15() as usize % pool.len()];
+            }
+            v
+        } else {
+            0
+        };
+        state.chain[i].store(v, Relaxed);
+        prev = v;
+    }
+    n
+}
+
+/// The small gear at the top right of the name plate: opens the SETUP window.
+fn setup_button(ui: &mut egui::Ui, g: G, st: &mut UiState) {
+    let (cx, cy) = (716.0, 52.0);
+    let resp = ui.interact(g.r(cx - 8.0, cy - 8.0, cx + 8.0, cy + 13.0), Id::new("setup_button"), g.sense(Sense::click()));
+    let col = if st.setup.open || resp.hovered() { Color32::from_rgb(150, 24, 18) } else { Color32::from_rgb(70, 44, 24) };
+    let p = ui.painter();
+    let c = g.p(cx, cy);
+    for i in 0..8 {
+        let a = i as f32 * std::f32::consts::TAU / 8.0;
+        p.circle_filled(c + vec2(a.cos(), a.sin()) * g.l(4.6), g.l(1.5), col);
+    }
+    p.circle_filled(c, g.l(4.2), col);
+    p.circle_filled(c, g.l(1.7), Color32::from_rgb(232, 222, 198));
+    text(ui, g, cx, cy + 9.5, "SETUP", 4.5, col);
+    if resp.on_hover_text("SETUP: window size; audio output and MIDI inputs (standalone app)").clicked() {
+        st.setup.toggle();
     }
 }
 
@@ -1378,7 +1658,14 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
         .on_hover_text("Noise filter: low-pass / high-pass")
         .clicked()
     {
-        access.set_gesture(vk(VoiceParam::FilterHp), if hp { 0.0 } else { 10.0 });
+        // In one gesture, first the value the panel shows, then the new one: a host that had
+        // fallen out of step with the plugin (Cubase VST3 after a module LOAD) is brought back
+        // in step, and always sees a change, so the click can't be swallowed.
+        let id = vk(VoiceParam::FilterHp);
+        access.begin(id);
+        access.set(id, if hp { 10.0 } else { 0.0 });
+        access.set(id, if hp { 0.0 } else { 10.0 });
+        access.end(id);
     }
     text(ui, g, 694.0, 296.0, "LP", 6.0, INK);
     text(ui, g, 714.0, 296.0, "HP", 6.0, INK);

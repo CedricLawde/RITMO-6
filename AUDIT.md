@@ -1,3 +1,37 @@
+# Ritmo-6 v2.2.0 (2026-11-26) — pattern chain, ASIO
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| Pattern chain | From the person's mock-ups. CHAIN button above FX (lamp = chain ON) turns the name plate over around its middle (0.65 s, same easing and perspective as the FX flip; nothing on it can be clicked while it turns). On its back: 16 slots in 4 rows joined by an orange line, ON / OFF, RANDOM, TAKE YOUR PICK. A slot holds a program 1-16 or nothing (click / wheel up = next, wheel down = previous, right-click = empty); slots after the first empty one are dimmed and not played. | screenshots: plate, panel, flip frozen at 30 % and 55 % |
+| Chain playback | With ON and a program in slot 1: START plays slot 1 (a random slot in RANDOM), each program to its own length (STEPS row), then the next slot; after the last filled slot (or at an empty slot) back to slot 1. Voices restart at each chained pattern. RANDOM: any chained slot but the one just played, drawn when a pattern starts (an early-NUDGE voice reads the first step of the pattern that really comes next). Host sync: the place in the chain is computed from the song position (steps mod the chain's total length), so it holds after loops and jumps; in RANDOM a jump draws a new slot. Switching ON while playing takes effect at the end of the current pattern. The program shown on the panel follows the chain. | tests `chain_plays_its_patterns_in_order_and_an_empty_slot_starts_it_again`, `chain_off_keeps_one_pattern`, `random_chain_mixes_the_chosen_patterns_without_playing_one_twice_in_a_row`, `host_sync_finds_its_place_in_the_chain` |
+| TAKE YOUR PICK | 2 to 16 slots from slot 1, each a program drawn among the programs that have notes (all 16 if none has), never the same twice side by side when there is a choice; the following slots are emptied (no gap). | code review |
+| Files | `chain`, `chain_on`, `chain_random` added to the pattern data (host project and bank files), optional: older files open with an empty chain, off. | test `chain_is_kept_in_files_and_old_files_have_none` |
+| ASIO (standalone) | cpal's ASIO host, feature `asio`. Steinberg's ASIO SDK 2.3 is dual-licensed (proprietary or **GPL-3**): used under GPL-3, like Ritmo-6. bundle.ps1 fetches it from steinberg.net into target/ (CPAL_ASIO_DIR) with libclang from pip (LIBCLANG_PATH), nothing installed; without them it builds WASAPI only and warns. The audio driver stays open (ASIO allows one driver per program); ASIO drivers are listed from the registry without loading them; 32- and 16-bit integer cards are written (clipped at full scale); with no device chosen, the first device that starts is used (an unplugged ASIO card is skipped); a device that opens but asks for no sound for 2 s is reported. | live run: drivers listed (Elektron Analog Four, Virus USB...); Analog Four (not connected) skipped, Virus USB ASIO opened 32-bit 44.1 kHz. **Sound through ASIO not yet heard by the person.** |
+
+Versions: 2.2.0 in both Cargo.toml (the panel shows it), README, manuals, dist/LISEZ-MOI.
+
+---
+
+# Ritmo-6 v2.1.0 (2026-11-26) — SETUP window: fixed window sizes, audio and MIDI devices
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| Free resize corner removed (plugin) | The plugin window no longer has a drag corner: a continuous resize negotiation with the host (VST3 in Cubase, CLAP in Bitwig) was unreliable. The SETUP window offers **60 / 80 / 100 / 130 / 160 %** of 840 x 490; the choice asks the host once for the new size (the same request the corner made, in a single step). The host keeps the size with the project; a size set by hand with an older version is kept and shown as "Now: xx %". Opens at 160 % as before. | build; test `fixed_sizes_are_recognised`. **Not yet checked in Cubase / Bitwig** (the builder can't run a host). |
+| `vendor/nih_plug_egui` | Local copy of nih-plug's egui adapter at the same revision (de421011, ISC), used through `[patch]`, with `EguiState::set_requested_size` made public (it was private: only the drag corner could ask for a size). See vendor/README.md. | build |
+| SETUP window | Small gear at the top right of the name plate. Layout of a sampler's options window: tabs on the left (Interface, and in the standalone Audio and MIDI), Close at the bottom right; Escape also closes it. The panel under it is dimmed and can't be clicked. Fonts and spacing follow the panel size. | screenshots at 160 % (each page) and 60 % |
+| Standalone: audio | Driver (cpal hosts: WASAPI on Windows), output device, output pair the Mix goes to (1-2, 3-4... on multichannel cards), sample rate and buffer size the device accepts (or its defaults), status and the measured block latency. A refused buffer size or rate falls back to the device's own, saying so. A missing device (unplugged) falls back to the default one; "Look for devices again" rescans and restarts a stopped stream. | live run: WASAPI, Realtek speakers, "Running", 480 samples = 10.0 ms at 48 kHz. **Confirmed by the person (2026-11-26): works in WASAPI.** |
+| Standalone: MIDI | Every MIDI input listed with On / Off (click to switch); several can be on at once. Until a choice is made, the first input is on, as before. | screenshot (list of the person's ports); not yet played from a keyboard |
+| LP/HP switch stuck in Cubase (VST3) | Reported by the person: after loading a module (voice preset), each voice's LP/HP switch could no longer be moved in Cubase VST3 (fine in Bitwig CLAP and the standalone). The switch was declared to hosts as a 0-10 knob. Now: (1) it is a two-position switch for the host (`BoolParam`, same id `flphp_1..6`, so automation stays attached; shown "Low-pass" / "High-pass"); projects saved before 2.1 are converted on load (`filter_state`: 5 and up = high-pass, as before); banks and module files keep 0 / 10 and load as before. (2) A click sends, in one gesture, the value the panel shows and then the new one, so a host that had fallen out of step with the plugin is put back in step and always sees a change. | tests `old_projects_keep_their_lp_hp_setting`, `lp_hp_is_a_switch_for_the_host`. **Not yet checked in Cubase** (cause inferred, not reproduced). |
+| Settings kept | Window size, driver, device, pair, rate, buffer and MIDI inputs saved in `%APPDATA%\Ritmo-6\settings.json`, read at start. Plugin projects, banks and patterns are unchanged. | code review |
+
+ASIO: added in 2.2.0.
+
+Manuals: panel, FX and module pictures retaken from the v2.1.0 app; HTML manuals gain the SETUP item (⚙ marker
+next to the gear) and the install box says "Window size: SETUP menu" instead of the resize corner; both PNG manuals
+re-rendered at 1920 x 1080 with headless Chrome and copied to dist/.
+
+---
+
 # Ritmo-6 v2.0.0 (2026-11-23) — probability, accent, per-voice length
 
 | Change | Behaviour | Verified by |
@@ -9,7 +43,8 @@
 | Files | Banks and pattern files gain `accent`, `prob`, `voice_lengths`, `pad_mode` (all optional). v1 files load with no accent, 100 % and one length per program. COPY / PASTE PRG carry the new data. | tests `v1_files_still_load`, `v2_fields_round_trip` |
 | Factory program 1 demo | Accent on A1, steps E7 (50 %) and E11 (75 %), row D on a 12-step loop (steps 1, 4, 7, 10). | screenshot |
 
-Not yet checked: listening in a host by the person. Manuals (HTML and PNG, FR and EN) redrawn with the v2 panel.
+Confirmed by the person (2026-11-23): v2.0.0 tested in their host, everything works; published on GitHub
+(https://github.com/CedricLawde/RITMO-6, release v2.0.0). Manuals (HTML and PNG, FR and EN) redrawn with the v2 panel.
 
 ---
 
@@ -17,7 +52,7 @@ Not yet checked: listening in a host by the person. Manuals (HTML and PNG, FR an
 
 | Finding | Fix | Verified by |
 |---|---|---|
-| Clicking LOAD or SAVE (bank or module) in the plugin crashed the host with 0xc0000409 (fail-fast) in Reaper, Cubase, VSTHost and Ableton Live. The Windows file dialog was opened from inside the plugin window's frame; its modal message loop called back into the window code that was still drawing, which stopped the process. Ableton's log of the reported crash shows v1.3.1 loaded, before this fix. | File dialogs now run on their own thread; the bank or module text is prepared before (SAVE) or applied after (LOAD) on the GUI thread, picked up on a later frame. Only one file window at a time. The plugin's panel drawing is also wrapped so a panic skips a frame instead of aborting the host. | test `file_jobs_finish_off_the_gui_thread`; build. Not yet confirmed in a host by the person. |
+| Clicking LOAD or SAVE (bank or module) in the plugin crashed the host with 0xc0000409 (fail-fast) in Reaper, Cubase, VSTHost and Ableton Live. The Windows file dialog was opened from inside the plugin window's frame; its modal message loop called back into the window code that was still drawing, which stopped the process. Ableton's log of the reported crash shows v1.3.1 loaded, before this fix. | File dialogs now run on their own thread; the bank or module text is prepared before (SAVE) or applied after (LOAD) on the GUI thread, picked up on a later frame. Only one file window at a time. The plugin's panel drawing is also wrapped so a panic skips a frame instead of aborting the host. | test `file_jobs_finish_off_the_gui_thread`; build. Confirmed in a host by the person (2026-11-23): LOAD and SAVE no longer crash. |
 
 ---
 

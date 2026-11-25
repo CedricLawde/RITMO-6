@@ -2,13 +2,13 @@
 
 use nih_plug::params::persist::PersistentField;
 use nih_plug::prelude::*;
-use nih_plug_egui::resizable_window::ResizableWindow;
 use nih_plug_egui::{create_egui_editor, egui, EguiState};
 
 
 use ritmo6_core::engine::{Engine, Transport, Values};
 use ritmo6_core::params::{self as rp, ParamAccess, ParamId, VoiceParam, NUM_CH, VOICE_LETTERS};
 use ritmo6_core::state::{PatternData, SharedState};
+use ritmo6_core::setup::SetupHost;
 use ritmo6_core::ui;
 use std::sync::Arc;
 
@@ -49,6 +49,36 @@ fn bparam(id: ParamId) -> BoolParam {
     BoolParam::new(name, s.default >= 0.5)
 }
 
+/// The noise filter's LP/HP switch of one voice: off = low-pass, on = high-pass.
+fn lphp_param(c: usize) -> BoolParam {
+    let s = rp::spec(ParamId::Voice(c, VoiceParam::FilterHp));
+    BoolParam::new(format!("{} {}", VOICE_LETTERS[c], s.name), s.default >= rp::FILTER_HP_THRESHOLD)
+        .with_value_to_string(Arc::new(|hp| (if hp { "High-pass" } else { "Low-pass" }).to_string()))
+        .with_string_to_value(Arc::new(|t| {
+            let t = t.trim().to_lowercase();
+            if t.starts_with('h') || t == "1" || t == "on" {
+                Some(true)
+            } else if t.starts_with('l') || t == "0" || t == "off" {
+                Some(false)
+            } else {
+                None
+            }
+        }))
+}
+
+/// Projects saved before 2.1 hold LP/HP as a number 0-10 (5 and up = high-pass): turn it into
+/// the switch's on/off so they open with the same filter.
+fn convert_old_lphp(params: &mut std::collections::BTreeMap<String, nih_plug::wrapper::state::ParamValue>) {
+    use nih_plug::wrapper::state::ParamValue;
+    for (id, value) in params.iter_mut() {
+        if id == "flphp" || id.starts_with("flphp_") {
+            if let ParamValue::F32(v) = *value {
+                *value = ParamValue::Bool(v >= rp::FILTER_HP_THRESHOLD);
+            }
+        }
+    }
+}
+
 #[derive(Params)]
 pub struct ChannelParams {
     #[id = "level"]
@@ -81,8 +111,11 @@ pub struct ChannelParams {
     pub filter_reso: FloatParam,
     #[id = "fdecay"]
     pub filter_decay: FloatParam,
+    /// LP/HP is a two-position switch: declared to the host as one (it was a 0-10 knob before
+    /// 2.1, which Cubase's VST3 could get out of step with after a module LOAD). Same id, so
+    /// automation stays attached; older projects are converted in `filter_state`.
     #[id = "flphp"]
-    pub filter_hp: FloatParam,
+    pub filter_hp: BoolParam,
     #[id = "panrnd"]
     pub pan_random: FloatParam,
     #[id = "nudge"]
@@ -118,7 +151,7 @@ impl ChannelParams {
             filter_freq: v(VoiceParam::FilterFreq),
             filter_reso: v(VoiceParam::FilterReso),
             filter_decay: v(VoiceParam::FilterDecay),
-            filter_hp: v(VoiceParam::FilterHp),
+            filter_hp: lphp_param(c),
             pan_random: v(VoiceParam::PanRandom),
             nudge: v(VoiceParam::Nudge),
             drift_amount: v(VoiceParam::DriftAmount),
@@ -307,12 +340,14 @@ pub struct RitmoParams {
 enum PRef<'a> {
     F(&'a FloatParam),
     B(&'a BoolParam),
+    /// A switch whose panel value is 0 or 10 (LP/HP): on at FILTER_HP_THRESHOLD and up.
+    S(&'a BoolParam),
 }
 
 impl RitmoParams {
     fn new(state: Arc<SharedState>) -> Self {
         RitmoParams {
-            // opens 1.6x the design size (1344 x 784); the corner still resizes it
+            // opens 1.6x the design size (1344 x 784); SETUP offers 60-160 %
             editor_state: EguiState::from_size((ui::W * ui::START_SCALE) as u32, (ui::H * ui::START_SCALE) as u32),
             patterns: PatternStore(state),
             ch: std::array::from_fn(ChannelParams::new),
@@ -362,7 +397,7 @@ impl RitmoParams {
                     VoiceParam::FilterFreq => F(&ch.filter_freq),
                     VoiceParam::FilterReso => F(&ch.filter_reso),
                     VoiceParam::FilterDecay => F(&ch.filter_decay),
-                    VoiceParam::FilterHp => F(&ch.filter_hp),
+                    VoiceParam::FilterHp => S(&ch.filter_hp),
                     VoiceParam::PanRandom => F(&ch.pan_random),
                     VoiceParam::Nudge => F(&ch.nudge),
                     VoiceParam::DriftAmount => F(&ch.drift_amount),
@@ -377,6 +412,13 @@ impl RitmoParams {
             PRef::B(b) => {
                 if b.value() {
                     1.0
+                } else {
+                    0.0
+                }
+            }
+            PRef::S(b) => {
+                if b.value() {
+                    10.0
                 } else {
                     0.0
                 }
@@ -397,20 +439,36 @@ impl ParamAccess for Access<'_> {
     fn begin(&self, id: ParamId) {
         match self.p.pref(id) {
             PRef::F(f) => self.s.begin_set_parameter(f),
-            PRef::B(b) => self.s.begin_set_parameter(b),
+            PRef::B(b) | PRef::S(b) => self.s.begin_set_parameter(b),
         }
     }
     fn set(&self, id: ParamId, plain: f32) {
         match self.p.pref(id) {
             PRef::F(f) => self.s.set_parameter(f, plain),
             PRef::B(b) => self.s.set_parameter(b, plain >= 0.5),
+            PRef::S(b) => self.s.set_parameter(b, plain >= rp::FILTER_HP_THRESHOLD),
         }
     }
     fn end(&self, id: ParamId) {
         match self.p.pref(id) {
             PRef::F(f) => self.s.end_set_parameter(f),
-            PRef::B(b) => self.s.end_set_parameter(b),
+            PRef::B(b) | PRef::S(b) => self.s.end_set_parameter(b),
         }
+    }
+}
+
+/// The plugin's window: its size is the host's to grant (fixed sizes from the SETUP window).
+struct PluginWindow<'a> {
+    state: &'a EguiState,
+}
+
+impl SetupHost for PluginWindow<'_> {
+    fn scale(&self, _ctx: &egui::Context) -> f32 {
+        let (w, h) = self.state.size();
+        (w as f32 / ui::W).min(h as f32 / ui::H)
+    }
+    fn set_scale(&mut self, _ctx: &egui::Context, scale: f32) {
+        self.state.set_requested_size(((ui::W * scale).round() as u32, (ui::H * scale).round() as u32));
     }
 }
 
@@ -467,6 +525,10 @@ impl Plugin for Ritmo6 {
     type SysExMessage = ();
     type BackgroundTask = ();
 
+    fn filter_state(state: &mut PluginState) {
+        convert_old_lphp(&mut state.params);
+    }
+
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
@@ -481,14 +543,14 @@ impl Plugin for Ritmo6 {
             |_, _| {},
             move |ctx, setter, st| {
                 let access = Access { p: &params, s: setter };
-                // resizable like the standalone (HiDPI screens, bigger panel): drag the corner at the
-                // bottom right; the panel scales to fit and the host keeps the size with the project
+                // No free resize corner: hosts (Cubase above all) handle a continuous drag badly.
+                // The SETUP window offers fixed sizes instead, asked of the host in one step; the
+                // panel scales to fit and the host keeps the size with the project.
+                let mut host = PluginWindow { state: &editor_state };
                 // a panic here would cross the host's window code and abort the whole host:
                 // catch it, so at worst the panel skips a frame
                 let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    ResizableWindow::new("ritmo6-window")
-                        .min_size(egui::vec2(ui::W * 0.6, ui::H * 0.6))
-                        .show(ctx, &editor_state, |ui| ui::draw_in(ui, &access, &state, st));
+                    ui::draw(ctx, &access, &state, st, &mut host);
                 }));
                 if drawn.is_err() {
                     nih_log!("Ritmo-6: the panel hit an error and skipped a frame");
@@ -578,3 +640,46 @@ impl Vst3Plugin for Ritmo6 {
 
 nih_export_clap!(Ritmo6);
 nih_export_vst3!(Ritmo6);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nih_plug::wrapper::state::ParamValue;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn old_projects_keep_their_lp_hp_setting() {
+        let mut params = BTreeMap::new();
+        params.insert("flphp_1".to_string(), ParamValue::F32(0.0));
+        params.insert("flphp_2".to_string(), ParamValue::F32(10.0));
+        params.insert("flphp_3".to_string(), ParamValue::F32(4.9));
+        params.insert("flphp_4".to_string(), ParamValue::F32(5.0));
+        params.insert("flphp_5".to_string(), ParamValue::Bool(true)); // already 2.1
+        params.insert("tune_1".to_string(), ParamValue::F32(7.5)); // untouched
+        convert_old_lphp(&mut params);
+        let hp = |k: &str| match params[k] {
+            ParamValue::Bool(b) => b,
+            _ => panic!("{k} is not a switch"),
+        };
+        assert!(!hp("flphp_1"));
+        assert!(hp("flphp_2"));
+        assert!(!hp("flphp_3"));
+        assert!(hp("flphp_4"));
+        assert!(hp("flphp_5"));
+        assert!(matches!(params["tune_1"], ParamValue::F32(v) if v == 7.5));
+    }
+
+    #[test]
+    fn lp_hp_is_a_switch_for_the_host() {
+        let p = RitmoParams::new(Arc::new(SharedState::default()));
+        for c in 0..NUM_CH {
+            let sw = &p.ch[c].filter_hp;
+            assert_eq!(sw.step_count(), Some(1), "voice {c}: the host must see two positions");
+            // each voice starts as its factory sound says (some voices are high-pass)
+            let id = ParamId::Voice(c, VoiceParam::FilterHp);
+            let hp = rp::spec(id).default >= rp::FILTER_HP_THRESHOLD;
+            assert_eq!(p.read(id), if hp { 10.0 } else { 0.0 });
+            assert_eq!(sw.normalized_value_to_string(1.0, false), "High-pass");
+        }
+    }
+}

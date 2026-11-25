@@ -1,6 +1,6 @@
 [package]
 name = "ritmo6"
-version = "2.0.0"
+version = "2.2.0"
 edition = "2021"
 authors = ["Geranium"]
 license = "GPL-3.0"
@@ -18,6 +18,9 @@ required-features = ["standalone"]
 [features]
 default = ["standalone"]
 standalone = ["dep:eframe", "dep:cpal", "dep:midir"]
+# ASIO driver for the standalone app (Windows). Needs Steinberg's ASIO SDK (CPAL_ASIO_DIR, GPL-3
+# option) and libclang (LIBCLANG_PATH) to build; bundle.ps1 sets both up. See README "Build from source".
+asio = ["standalone", "cpal/asio", "dep:asio-sys"]
 
 [dependencies]
 egui = "0.31.1"
@@ -29,6 +32,10 @@ cpal = { version = "0.15", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 midir = { version = "0.10", optional = true }
 
+# the same ASIO bindings cpal uses, to list ASIO drivers without loading them
+[target.'cfg(windows)'.dependencies]
+asio-sys = { version = "0.2.6", optional = true }
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
@@ -38,7 +45,12 @@ winit = "0.30"
 [workspace]
 members = ["plugin"]
 default-members = [".", "plugin"]
+exclude = ["vendor"]
 resolver = "2"
+
+# Local copy of nih-plug's egui adapter with one public function (fixed window sizes), see vendor/README.md
+[patch."https://github.com/robbert-vdh/nih-plug.git"]
+nih_plug_egui = { path = "vendor/nih_plug_egui" }
 
 [profile.release]
 lto = "thin"

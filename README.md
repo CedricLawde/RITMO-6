@@ -3,11 +3,35 @@
 **Free 6-voice analog-style drum machine — VST3 · CLAP · standalone (Windows 64-bit)**
 *Boîte à rythmes analogique 6 voix, gratuite — VST3 · CLAP · autonome (Windows 64 bits)*
 
-**Version 2.0.0** · [Download / Télécharger](../../releases/latest)
+**Version 2.2.0** · [Download / Télécharger](../../releases/latest)
 
 ![Ritmo-6 user manual](manual/user-manual-ritmo6.png)
 
 *Mode d'emploi en français : [manual/mode-emploi-ritmo6.png](manual/mode-emploi-ritmo6.png)*
+
+## What's new in 2.2 / Nouveautés de la 2.2
+- **CHAIN**: the button above FX turns the RITMO·6 plate over. Behind it, a **pattern chain** of 16 slots (click or
+  mouse wheel to put a program in a slot, right-click to empty it). With **ON / OFF** lit, the chained programs play
+  one after another, from the first slot up to the first empty one, then again. **RANDOM** plays them in random
+  order (never the same twice in a row); **TAKE YOUR PICK** fills the chain with 2 to 16 patterns drawn at random,
+  with no gap. In host sync the chain keeps its place after a loop or a jump. Saved with projects and banks.
+- **ASIO** in the standalone app (SETUP ▸ Audio ▸ Driver), besides WASAPI; 16- and 32-bit cards are supported.
+
+*Le bouton **CHAIN** (au-dessus de FX) fait basculer la plaque RITMO·6 : derrière, une **chaîne de motifs** de 16 cases
+(clic ou molette = un programme, clic droit = vider). **ON / OFF** la fait jouer jusqu'à la première case vide, puis en
+boucle ; **RANDOM** dans un ordre au hasard ; **TAKE YOUR PICK** la remplit de 2 à 16 motifs tirés au sort, sans trou.
+Et l'**ASIO** dans la version autonome (SETUP ▸ Audio ▸ Driver).*
+
+## What's new in 2.1 / Nouveautés de la 2.1
+The small **SETUP** gear at the top right of the name plate opens a settings window:
+- **Window size**: 60, 80, 100, 130 or 160 %. In a plugin the host is asked once for the new size (the free
+  resize corner is gone: Cubase and some CLAP hosts handled the continuous drag badly).
+- Standalone app only: **Audio** (driver, output device, output pair, sample rate, buffer size, status and
+  measured latency) and **MIDI** (switch each MIDI input on or off). Kept for the next start.
+
+*Le petit engrenage **SETUP** en haut à droite de la plaque ouvre les réglages : taille de la fenêtre (60, 80, 100,
+130 ou 160 %, demandée une seule fois à l'hôte en plugin, à la place de la poignée d'étirement) ; en autonome,
+choix de la sortie audio et des entrées MIDI, gardés pour le prochain lancement.*
 
 ## What's new in 2.0 / Nouveautés de la 2.0
 The red **PAD MODE** display under the grid sets what a click on a step does:
@@ -39,7 +63,9 @@ de chances de jouer) et **LENGTH** (chaque voix boucle sur sa propre longueur : 
 - **FX panel** behind the front plate (press FX): phaser, op-amp distortion, delay (TAPE / BBD / MOD, sync or free)
   and spring reverb with KICK, LOW CUT / HIGH CUT; 4 sends per voice. The separate outputs stay dry
   (see [ROUTAGE.md](ROUTAGE.md) for the routing).
-- Resizable window (plugin too), opens 1.6x larger
+- Window size from the SETUP menu: 60 / 80 / 100 / 130 / 160 % (opens at 160 %)
+- Standalone: choice of audio output (WASAPI or ASIO) and MIDI inputs
+- Pattern chain: up to 16 programs in a row, in order or at random
 
 *6 voix de synthèse avec leur module de son · moteurs MINI et ORIG, 16 kits d'usine · séquenceur 16 pas × 6 voix,
 16 programmes · par pas : MULTIPLY, ACCENT, PROBABILITÉ ; par voix : sa propre longueur · saturation des coups
@@ -70,13 +96,19 @@ cargo build --release
 ```
 `target/release/ritmo6_vst3.dll` is the plugin (rename it to `Ritmo-6.vst3` or `Ritmo-6.clap`);
 `target/release/ritmo6.exe` is the standalone app. `bundle.ps1` does both and fills `dist/`.
+
+ASIO in the standalone app: `cargo build --release --features ritmo6/asio` with `CPAL_ASIO_DIR` set to
+Steinberg's ASIO SDK (used under its GPL-3 option) and `LIBCLANG_PATH` to a folder holding `libclang.dll`.
+`bundle.ps1` fetches both into `target/` by itself (the SDK from steinberg.net, libclang with pip) and falls back
+to a WASAPI-only build if it can't. ASIO is a trademark of Steinberg Media Technologies GmbH.
 `cargo test --release` runs the tests. Changes and how they were checked are listed in [AUDIT.md](AUDIT.md).
 
 ## Credits
 - Inspired by the freeware **Ocet** rhythm machine by Elektrostudio (2009) and the vintage
   EKO ComputeRhythm. Ritmo-6 is an independent project, not affiliated with either.
 - Built with [nih-plug](https://github.com/robbert-vdh/nih-plug), [egui](https://github.com/emilk/egui),
-  cpal and midir. Panel chassis rendered with Blender.
+  cpal and midir. Panel chassis rendered with Blender. `vendor/nih_plug_egui` is nih-plug's egui adapter
+  (ISC licence) with one function made public, see [vendor/README.md](vendor/README.md).
 
 ## License
 GPL-3.0 — see [LICENSE](LICENSE). (The VST3 bindings used by nih-plug are GPL-3.0, so the

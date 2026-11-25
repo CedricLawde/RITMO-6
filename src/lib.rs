@@ -9,6 +9,7 @@ pub mod fx;
 pub mod kits;
 pub mod params;
 pub mod presets;
+pub mod setup;
 pub mod state;
 pub mod ui;
 
