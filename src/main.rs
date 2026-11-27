@@ -677,6 +677,7 @@ fn main() -> eframe::Result<()> {
     let setup_page = args.iter().position(|a| a == "--setup").and_then(|i| args.get(i + 1)).map(|p| match p.as_str() {
         "audio" => Page::Audio,
         "midi" => Page::Midi,
+        "about" => Page::About,
         _ => Page::Interface,
     });
 
@@ -734,6 +735,10 @@ fn main() -> eframe::Result<()> {
                     u.fx_freeze = flip;
                     if let Some(p) = setup_page {
                         u.setup.show(p);
+                    }
+                    // --check-update: press the About page's button at start (for pictures)
+                    if args.iter().any(|a| a == "--check-update") {
+                        u.setup.check_updates();
                     }
                     u.chain_open = chain_open || chain_flip.is_some();
                     u.chain_freeze = chain_flip;

@@ -1,3 +1,13 @@
+# Ritmo-6 v2.3.0 (2026-11-27) — About page: website and update check
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| SETUP ▸ About | New tab, in the plugin and the standalone: version, a link to https://www.geraniumproduction.be/ritmo6 and to the GitHub releases (opened in the browser). | screenshot |
+| Check for a new version | Only when the button is pressed: asks `api.github.com/repos/CedricLawde/RITMO-6/releases/latest` on its own thread (the panel never waits) through the system's `curl` (Windows 10+, macOS, Linux), so no web library is linked into the plugin. Versions compared by number (2.10 > 2.9). Up to date, newer (tag and date), or the reason it failed. | tests `versions_compare_by_number`, `a_github_release_is_read`; live run: "Up to date: the latest release is v2.2.0" |
+| Direct download | A newer release offers "Download": every file of the release into `Downloads\Ritmo-6 <tag>` (file names reduced to their last part), progress shown, then the folder opens; the panel says how to install (host or app closed, replace the files). A failure points to the release page. | ignored network test `a_release_file_really_downloads` run: user-manual-ritmo6.png from v2.2.0, 1 217 554 bytes |
+
+---
+
 # Ritmo-6 v2.2.0 (2026-11-26) — pattern chain, ASIO
 
 | Change | Behaviour | Verified by |

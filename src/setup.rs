@@ -83,6 +83,7 @@ pub enum Page {
     Interface,
     Audio,
     Midi,
+    About,
 }
 
 #[derive(Default)]
@@ -91,6 +92,8 @@ pub struct SetupUi {
     pub page: Page,
     /// The window was just opened: refresh the device lists once.
     fresh: bool,
+    /// The About page's check for a newer release (filled by its own thread).
+    update: crate::update::UpdateState,
 }
 
 impl SetupUi {
@@ -98,6 +101,11 @@ impl SetupUi {
         self.open = !self.open;
         self.fresh = self.open;
     }
+    /// Ask GitHub for the latest release now (the About page's button).
+    pub fn check_updates(&mut self) {
+        crate::update::check(&self.update);
+    }
+
     /// Open the window on one page (also used for pictures: `--setup audio`).
     pub fn show(&mut self, page: Page) {
         self.open = true;
@@ -138,7 +146,7 @@ pub fn draw(ctx: &egui::Context, panel: Rect, s: f32, st: &mut SetupUi, host: &m
             host.change(DeviceChange::Refresh);
         }
     }
-    if !devices_owned {
+    if !devices_owned && matches!(st.page, Page::Audio | Page::Midi) {
         st.page = Page::Interface;
     }
     let view = host.devices();
@@ -178,9 +186,9 @@ pub fn draw(ctx: &egui::Context, panel: Rect, s: f32, st: &mut SetupUi, host: &m
             p.rect_stroke(page, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(30, 30, 30)), egui::StrokeKind::Inside);
 
             let pages: &[(Page, &str)] = if devices_owned {
-                &[(Page::Interface, "Interface"), (Page::Audio, "Audio"), (Page::Midi, "MIDI")]
+                &[(Page::Interface, "Interface"), (Page::Audio, "Audio"), (Page::Midi, "MIDI"), (Page::About, "About")]
             } else {
-                &[(Page::Interface, "Interface")]
+                &[(Page::Interface, "Interface"), (Page::About, "About")]
             };
             for (i, (pg, name)) in pages.iter().enumerate() {
                 let r = Rect::from_min_size(pos2(tabs.min.x + 2.0 * s, tabs.min.y + 2.0 * s + i as f32 * 17.0 * s), vec2(tabs.width() - 4.0 * s, 15.0 * s));
@@ -221,6 +229,7 @@ pub fn draw(ctx: &egui::Context, panel: Rect, s: f32, st: &mut SetupUi, host: &m
                         midi_page(&mut pui, s, v, host);
                     }
                 }
+                Page::About => about_page(&mut pui, s, &st.update, devices_owned),
             }
         });
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -291,6 +300,77 @@ fn interface_page(ui: &mut egui::Ui, s: f32, host: &mut dyn SetupHost, standalon
         note(ui, "If the host refuses, the panel keeps its size.");
         ui.add_space(6.0 * s);
         note(ui, "Audio and MIDI devices are chosen in your host (Cubase, Bitwig, Live...).");
+    }
+}
+
+fn about_page(ui: &mut egui::Ui, s: f32, update: &crate::update::UpdateState, standalone: bool) {
+    use crate::update::{self as up, Update};
+    ui.heading(format!("Ritmo-6 v{}", up::this_version()));
+    note(ui, "Six-voice analog-style drum machine by Geranium. Free, GPL-3.0.");
+    ui.add_space(6.0 * s);
+    ui.horizontal(|ui| {
+        label(ui, s, "Website");
+        if ui.link(RichText::new("www.geraniumproduction.be/ritmo6").color(Color32::from_rgb(255, 170, 100))).on_hover_text(up::WEBSITE).clicked() {
+            up::open(up::WEBSITE);
+        }
+    });
+    ui.horizontal(|ui| {
+        label(ui, s, "Releases");
+        if ui.link(RichText::new("github.com/CedricLawde/RITMO-6").color(Color32::from_rgb(255, 170, 100))).on_hover_text(up::RELEASES_PAGE).clicked() {
+            up::open(up::RELEASES_PAGE);
+        }
+    });
+    ui.add_space(8.0 * s);
+    ui.heading("Updates");
+    ui.add_space(2.0 * s);
+    let state = up::get(update);
+    let busy = matches!(state, Update::Checking | Update::Downloading { .. });
+    ui.horizontal(|ui| {
+        if ui.add_enabled(!busy, egui::Button::new("Check for a new version")).clicked() {
+            up::check(update);
+        }
+        let (text, col) = match &state {
+            Update::Idle => ("Asks GitHub once, only when you press the button.".to_string(), INK_DIM),
+            Update::Checking => ("Asking GitHub...".to_string(), INK),
+            Update::UpToDate(tag) => (format!("Up to date: the latest release is {tag}."), Color32::from_rgb(120, 220, 110)),
+            Update::Available(r) => (format!("{} is out ({}).", r.tag, r.date), Color32::from_rgb(255, 190, 90)),
+            Update::Downloading { tag, done, total } => (format!("Downloading {tag}: file {} of {total}...", done + 1), INK),
+            Update::Downloaded { tag, .. } => (format!("{tag} downloaded."), Color32::from_rgb(120, 220, 110)),
+            Update::Failed(e) => (e.clone(), Color32::from_rgb(255, 120, 90)),
+        };
+        ui.scope(|ui| {
+            ui.set_max_width(250.0 * s);
+            ui.add(egui::Label::new(RichText::new(text).color(col)).wrap());
+        });
+    });
+    match &state {
+        Update::Available(r) => {
+            ui.add_space(4.0 * s);
+            ui.horizontal(|ui| {
+                if ui.button(format!("Download {} ({} files)", r.tag, r.files.len())).clicked() {
+                    up::download(update, r.clone());
+                }
+                if ui.link("What's new").on_hover_text(&r.page).clicked() {
+                    up::open(&r.page);
+                }
+            });
+            note(ui, "The files go to your Downloads folder, in \"Ritmo-6 <version>\", which opens when they are there.");
+        }
+        Update::Downloaded { folder, .. } => {
+            ui.add_space(4.0 * s);
+            ui.horizontal(|ui| {
+                if ui.button("Open the folder").clicked() {
+                    up::open(&folder.to_string_lossy());
+                }
+                note(ui, &folder.to_string_lossy());
+            });
+            if standalone {
+                note(ui, "To install: close Ritmo-6, then replace Ritmo-6.exe with the new one.");
+            } else {
+                note(ui, "To install: close your host, replace Ritmo-6.vst3 (and Ritmo-6.clap) with the new files.");
+            }
+        }
+        _ => {}
     }
 }
 

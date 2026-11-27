@@ -3,11 +3,19 @@
 **Free 6-voice analog-style drum machine — VST3 · CLAP · standalone (Windows 64-bit)**
 *Boîte à rythmes analogique 6 voix, gratuite — VST3 · CLAP · autonome (Windows 64 bits)*
 
-**Version 2.2.0** · [Download / Télécharger](../../releases/latest)
+**Version 2.3.0** · [Download / Télécharger](../../releases/latest)
 
 ![Ritmo-6 user manual](manual/user-manual-ritmo6.png)
 
 *Mode d'emploi en français : [manual/mode-emploi-ritmo6.png](manual/mode-emploi-ritmo6.png)*
+
+## What's new in 2.3 / Nouveautés de la 2.3
+SETUP ▸ **About**: a link to the website ([geraniumproduction.be/ritmo6](https://www.geraniumproduction.be/ritmo6)) and a
+**Check for a new version** button. It asks GitHub for the latest release (only when pressed) and, when there is a
+newer one, downloads its files straight into your Downloads folder (`Ritmo-6 <version>`), then opens it.
+
+*SETUP ▸ **About** : lien vers le site web et bouton de recherche d'une nouvelle version ; si elle existe, ses fichiers
+se téléchargent directement dans le dossier Téléchargements.*
 
 ## What's new in 2.2 / Nouveautés de la 2.2
 - **CHAIN**: the button above FX turns the RITMO·6 plate over. Behind it, a **pattern chain** of 16 slots (click or

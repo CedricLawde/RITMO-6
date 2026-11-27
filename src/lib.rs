@@ -11,6 +11,7 @@ pub mod params;
 pub mod presets;
 pub mod setup;
 pub mod state;
+pub mod update;
 pub mod ui;
 
 pub use egui;
