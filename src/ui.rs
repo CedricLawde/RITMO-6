@@ -1,11 +1,13 @@
 //! The front panel, drawn by hand so the plugin and the standalone app look identical.
 
 use crate::bank;
+use crate::dsp::SoundEngine;
+use crate::mp7;
 use crate::params::{
-    apply_kit, delay_division, delay_free_ms, fx_spec, internal_bpm, phaser_hz, spec, sync_division,
-    voice_spec, FxParam, ParamAccess, ParamId, VoiceParam, DELAY_DIVISIONS, DELAY_MODE_NAMES,
-    FILTER_HP_THRESHOLD, FX_BUS_NAMES, FX_BUS_SHORT, NUM_CH, NUM_FX_BUSES, NUM_KIT_CHOICES, NUM_STEPS,
-    SYNC_NAMES, VOICE_LETTERS,
+    apply_kit, delay_division, delay_free_ms, fx_spec, internal_bpm, load_mp7_instrument, phaser_hz,
+    set_sound_engine, sound_engine, spec, sync_division, voice_spec, FxParam, ParamAccess, ParamId,
+    VoiceParam, DELAY_DIVISIONS, DELAY_MODE_NAMES, FILTER_HP_THRESHOLD, FX_BUS_NAMES, FX_BUS_SHORT,
+    MP7_KIT_CHOICE, NUM_CH, NUM_FX_BUSES, NUM_KIT_CHOICES, NUM_STEPS, SYNC_NAMES, VOICE_LETTERS,
 };
 use crate::setup::{SetupHost, SetupUi};
 use crate::state::{NUM_CHAIN, SharedState, NUM_PAD_MODES, PAD_ACCENT, PAD_LENGTH, PAD_MODE_NAMES, PAD_MULTI, PAD_NOTE, PAD_PROB};
@@ -695,6 +697,21 @@ fn knob_face(ui: &egui::Ui, g: G, cx: f32, cy: f32, r: f32, norm: f32, pointer: 
 
 /// A rotary knob bound to a parameter (drag up/down, shift for fine, double-click to reset).
 fn knob(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, id: ParamId, cx: f32, cy: f32, r: f32) -> Response {
+    knob_with(ui, g, access, id, cx, cy, r, None)
+}
+
+/// A knob whose hover text is given (the MP7 module, where the knobs mean other things).
+#[allow(clippy::too_many_arguments)]
+fn knob_with(
+    ui: &mut egui::Ui,
+    g: G,
+    access: &dyn ParamAccess,
+    id: ParamId,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    hover: Option<&dyn Fn(f32) -> String>,
+) -> Response {
     let sp = spec(id);
     let rect = g.r(cx - r - 2.0, cy - r - 2.0, cx + r + 2.0, cy + r + 2.0);
     let resp = ui.interact(rect, Id::new(("knob", id)), g.sense(Sense::click_and_drag()));
@@ -725,8 +742,16 @@ fn knob(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, id: ParamId, cx: f32,
         }
     }
     knob_face(ui, g, cx, cy, r, norm, Color32::from_rgb(20, 20, 22));
-    let shown = sp.format(access.get(id));
-    resp.on_hover_text(format!("{}: {}", sp.name, shown))
+    match hover {
+        Some(h) => {
+            let t = h(access.get(id));
+            resp.on_hover_text(t)
+        }
+        None => {
+            let shown = sp.format(access.get(id));
+            resp.on_hover_text(format!("{}: {}", sp.name, shown))
+        }
+    }
 }
 
 fn round_button(ui: &mut egui::Ui, g: G, id: Id, cx: f32, cy: f32, r: f32, lit: Option<Color32>) -> Response {
@@ -747,6 +772,21 @@ fn round_button(ui: &mut egui::Ui, g: G, id: Id, cx: f32, cy: f32, r: f32, lit: 
     if let Some(col) = lit {
         p.circle_filled(c, g.l(r * 1.25), col.gamma_multiply(0.18));
     }
+    resp
+}
+
+/// A three-position lever (0 left, 1 middle, 2 right).
+fn three_way_switch(ui: &mut egui::Ui, g: G, id: Id, cx: f32, cy: f32, pos: usize) -> Response {
+    let rect = g.r(cx - 19.0, cy - 6.0, cx + 19.0, cy + 6.0);
+    let resp = ui.interact(rect, id, g.sense(Sense::click()));
+    fill(ui, g, cx - 19.0, cy - 6.0, cx + 19.0, cy + 6.0, 6.0, Color32::from_rgb(14, 15, 16));
+    let p = ui.painter();
+    for k in 0..3 {
+        p.circle_filled(g.p(cx - 12.0 + 12.0 * k as f32, cy), g.l(1.2), Color32::from_rgb(70, 72, 76));
+    }
+    let kx = cx - 12.0 + 12.0 * pos.min(2) as f32;
+    p.circle_filled(g.p(kx, cy), g.l(5.0), Color32::from_rgb(196, 200, 206));
+    p.circle_filled(g.p(kx - 1.0, cy - 1.5), g.l(2.0), Color32::WHITE);
     resp
 }
 
@@ -920,14 +960,43 @@ fn draw_main(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedSt
     }
     text(ui, g, 87.0, 451.0, "KEYB CTRL", 7.5, INK);
 
-    // SOUND selector: MINI (first-day engine) or ORIGINAL (decoded model)
-    let original = access.get(ParamId::Sound) >= 0.5;
-    text(ui, g, 140.0, 321.0, if original { "SOUND: ORIG" } else { "SOUND: MINI" }, 7.5, ORANGE_HI);
-    if toggle_switch(ui, g, Id::new("sound"), 140.0, 334.0, original)
-        .on_hover_text("Sound engine: MINI = the punchy first-day sound, ORIGINAL = the model decoded from the plugin")
-        .clicked()
-    {
-        access.set_gesture(ParamId::Sound, if original { 0.0 } else { 1.0 });
+    // SOUND selector: MINI (first-day engine), ORIGINAL (decoded model) or MP7 (Mini Pops 7 style)
+    let engine = sound_engine(access);
+    let pos = match engine {
+        SoundEngine::Mini => 0,
+        SoundEngine::Original => 1,
+        SoundEngine::Mp7 => 2,
+    };
+    text(ui, g, 140.0, 321.0, ["SOUND: MINI", "SOUND: ORIG", "SOUND: MP7"][pos], 7.5, ORANGE_HI);
+    let r = three_way_switch(ui, g, Id::new("sound"), 140.0, 334.0, pos).on_hover_text(
+        "Sound engine (click a position): MINI = the punchy first-day sound, ORIG = the model decoded \
+         from the plugin, MP7 = the very analog Mini Pops 7 style instruments (bass drum, bongos, conga, \
+         claves, cowbell, guiro, quijada...). Each voice's module picks its MP7 instrument; turning MP7 \
+         on gives every voice the sound of its instrument.",
+    );
+    if r.clicked() {
+        let next = match r.interact_pointer_pos() {
+            Some(p) => {
+                let x = (p.x - g.p(140.0, 0.0).x) / g.l(1.0);
+                if x < -6.0 {
+                    0
+                } else if x > 6.0 {
+                    2
+                } else {
+                    1
+                }
+            }
+            None => (pos + 1) % 3,
+        };
+        let next = if next == pos { (pos + 1) % 3 } else { next };
+        let e = [SoundEngine::Mini, SoundEngine::Original, SoundEngine::Mp7][next];
+        set_sound_engine(access, e);
+        let msg = match e {
+            SoundEngine::Mini => "MINI sound",
+            SoundEngine::Original => "ORIGINAL sound",
+            SoundEngine::Mp7 => "MP7 sound: every voice plays its MP7 instrument (open a module to choose it)",
+        };
+        say(st, Some(msg.into()), now);
     }
 
     // TEMPO DRIFT / SOUND DRIFT (Minipop-style wobble)
@@ -1228,7 +1297,14 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
     // factory kit selector (the original's 16 programs)
     let kit = state.kit.load(Relaxed) as usize;
     ui.painter().rect_filled(g.r(628.0, 108.0, 690.0, 128.0), g.l(2.0), Color32::from_rgb(30, 4, 4));
-    text(ui, g, 659.0, 118.0, &(if kit == 0 { "MINI".to_string() } else { format!("KIT {:02}", kit) }), 11.0, RED_LED);
+    let kit_name = if kit == 0 {
+        "MINI".to_string()
+    } else if kit == MP7_KIT_CHOICE {
+        "MP7".to_string()
+    } else {
+        format!("KIT {:02}", kit)
+    };
+    text(ui, g, 659.0, 118.0, &kit_name, 11.0, RED_LED);
     let kl = ui.interact(g.r(606.0, 108.0, 626.0, 128.0), Id::new("kit_dn"), g.sense(Sense::click()));
     let kr = ui.interact(g.r(692.0, 108.0, 712.0, 128.0), Id::new("kit_up"), g.sense(Sense::click()));
     let arrow = |x: f32, dir: f32| vec![g.p(x - 5.0 * dir, 118.0), g.p(x + 5.0 * dir, 112.0), g.p(x + 5.0 * dir, 124.0)];
@@ -1244,7 +1320,14 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
     if let Some(k) = new_kit {
         state.kit.store(k as u8, Relaxed);
         apply_kit(access, k);
-        say(st, Some(if k == 0 { "MINI kit loaded (Mini sound)".into() } else { format!("Factory kit {} loaded (Original sound)", k) }), now);
+        let msg = if k == 0 {
+            "MINI kit loaded (Mini sound)".to_string()
+        } else if k == MP7_KIT_CHOICE {
+            "MP7 kit loaded (MP7 sound: bass drum, snare, conga, claves, hihat, quijada)".to_string()
+        } else {
+            format!("Factory kit {} loaded (Original sound)", k)
+        };
+        say(st, Some(msg), now);
     }
     let lamp = state.running.load(Relaxed) || state.host_driven.load(Relaxed);
     ui.painter().circle_filled(g.p(659.0, 146.0), g.l(3.5), if lamp { RED_LED } else { Color32::from_rgb(90, 24, 20) });
@@ -1294,7 +1377,8 @@ fn draw_right(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedS
         text(ui, g, x + 9.0, 273.0, &name, 6.5, INK);
         // TUNE on every strip, with the note it plays (click the note to tune exactly to it)
         let tune_id = ParamId::Voice(ch, VoiceParam::ToneTune);
-        text(ui, g, x + 9.0, 283.0, "TUNE", 4.5, Color32::from_rgb(230, 200, 140));
+        let strip_label = if sound_engine(access) == SoundEngine::Mp7 { "FREQ" } else { "TUNE" };
+        text(ui, g, x + 9.0, 283.0, strip_label, 4.5, Color32::from_rgb(230, 200, 140));
         knob(ui, g, access, tune_id, x + 9.0, 293.0, 6.5);
         let tune = access.get(tune_id);
         let (note, cents) = crate::params::note_of_volts(tune);
@@ -1578,12 +1662,21 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
         let y = 70.0 + k as f32 * 44.0;
         ui.painter().line_segment([g.p(598.0, y), g.p(720.0, y + 12.0)], Stroke::new(g.l(1.0), Color32::from_rgb(64, 76, 66)));
     }
-    let title = format!("MODULE - {}0{}", VOICE_LETTERS[ch], ch + 1);
+    let is_mp7 = sound_engine(access) == SoundEngine::Mp7;
+    let inst = mp7::instrument_index(access.get(ParamId::Mp7Inst(ch)));
+    let title = if is_mp7 {
+        format!("MODULE - {}0{} · MP7", VOICE_LETTERS[ch], ch + 1)
+    } else {
+        format!("MODULE - {}0{}", VOICE_LETTERS[ch], ch + 1)
+    };
     ui.painter().rect_filled(g.r(600.0, 50.0, 718.0, 66.0), g.l(2.0), Color32::from_rgb(20, 22, 20));
     text(ui, g, 659.0, 58.0, &title, 9.5, INK);
 
     let vk = |p: VoiceParam| ParamId::Voice(ch, p);
     let gold = Color32::from_rgb(230, 200, 140);
+    if is_mp7 {
+        draw_mp7_module(ui, g, access, state, st, ch, inst, now);
+    } else {
     // TONE OSC: sine with pitch envelope and phase modulation
     let tone: [(VoiceParam, f32, f32); 7] = [
         (VoiceParam::ToneTune, 614.0, 90.0),
@@ -1616,6 +1709,7 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
     }
     text(ui, g, 704.0, 147.0, "TONE", 8.0, gold);
     text(ui, g, 704.0, 158.0, "OSC", 8.0, gold);
+    }
 
     // LOAD / RAND / SAVE
     let lb = g.r(598.0, 196.0, 634.0, 212.0);
@@ -1631,16 +1725,21 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
         start_dialog(st, now, || bank::save_module_task(access, ch));
     }
     if round_button(ui, g, Id::new(("mod_rand", ch)), 659.0, 204.0, 12.0, Some(Color32::from_rgb(196, 90, 70)))
-        .on_hover_text("Random sound for this module")
+        .on_hover_text(if is_mp7 { "Random variation of this MP7 instrument" } else { "Random sound for this module" })
         .clicked()
     {
-        randomize_voice(access, st, ch);
+        if is_mp7 {
+            randomize_mp7_voice(access, st, ch, inst);
+        } else {
+            randomize_voice(access, st, ch);
+        }
         state.trig_req.fetch_or(1 << ch, Relaxed);
         say(st, Some(format!("Module {} randomized", VOICE_LETTERS[ch])), now);
     }
     text(ui, g, 659.0, 204.0, "RAND", 6.5, Color32::WHITE);
 
-    // NOISE OSC + FILTER
+    // NOISE OSC + FILTER (the MP7 module draws its own)
+    if !is_mp7 {
     let noise: [(VoiceParam, f32, f32); 5] = [
         (VoiceParam::NoiseVolume, 614.0, 244.0),
         (VoiceParam::NoiseDecay, 659.0, 244.0),
@@ -1670,6 +1769,7 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
     text(ui, g, 694.0, 296.0, "LP", 6.0, INK);
     text(ui, g, 714.0, 296.0, "HP", 6.0, INK);
     text(ui, g, 659.0, 316.0, "NOISE  OSC  ·  FILTER", 8.0, gold);
+    }
 
     // PAN RANDOM (requested addition) + audition
     knob(ui, g, access, vk(VoiceParam::PanRandom), 626.0, 356.0, 11.0);
@@ -1686,6 +1786,123 @@ fn draw_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &Shared
     text(ui, g, 659.0, 432.0, "CLOSE", 9.0, INK);
     if r.clicked() {
         st.open_module = None;
+    }
+}
+
+/// The sound module of a voice on the MP7 engine: its instrument (one of 15, with its preset
+/// sound) and the 13 sound knobs under their MP7 names. Knobs an instrument doesn't use are
+/// dimmed.
+#[allow(clippy::too_many_arguments)]
+fn draw_mp7_module(ui: &mut egui::Ui, g: G, access: &dyn ParamAccess, state: &SharedState, st: &mut UiState, ch: usize, inst: usize, now: f64) {
+    let gold = Color32::from_rgb(230, 200, 140);
+    let labels = mp7::knob_labels(inst);
+    let slots: [(VoiceParam, f32, f32); 12] = [
+        (VoiceParam::ToneTune, 614.0, 90.0),
+        (VoiceParam::ToneDecay, 659.0, 90.0),
+        (VoiceParam::ToneVolume, 704.0, 90.0),
+        (VoiceParam::PitchDecay, 614.0, 128.0),
+        (VoiceParam::PitchDecayVol, 659.0, 128.0),
+        (VoiceParam::PhaseModRate, 614.0, 166.0),
+        (VoiceParam::PhaseModLev, 659.0, 166.0),
+        (VoiceParam::NoiseVolume, 614.0, 244.0),
+        (VoiceParam::NoiseDecay, 659.0, 244.0),
+        (VoiceParam::FilterDecay, 704.0, 244.0),
+        (VoiceParam::FilterFreq, 614.0, 282.0),
+        (VoiceParam::FilterReso, 659.0, 282.0),
+    ];
+    for (p, x, y) in slots {
+        let slot = p.index();
+        let label = labels[slot];
+        let id = ParamId::Voice(ch, p);
+        let hover = move |v: f32| match label {
+            Some(l) => format!("{l}: {}", mp7::describe(inst, slot, v)),
+            None => format!("Not used by the {}", mp7::INSTRUMENT_NAMES[inst]),
+        };
+        knob_with(ui, g, access, id, x, y, 10.0, Some(&hover));
+        if label.is_none() {
+            ui.painter().circle_filled(g.p(x, y), g.l(10.5), Color32::from_black_alpha(150));
+        }
+        text(ui, g, x, y + 16.0, label.unwrap_or("-"), 6.0, if label.is_some() { INK } else { INK_DIM });
+    }
+
+    // the note FREQ sits on (click = tune exactly to it)
+    let tune_id = ParamId::Voice(ch, VoiceParam::ToneTune);
+    let tune = access.get(tune_id);
+    let (note, cents) = crate::params::note_of_volts(tune);
+    let lcd = g.r(684.0, 118.0, 724.0, 136.0);
+    let resp = ui.interact(lcd, Id::new(("tune_note", ch)), g.sense(Sense::click()));
+    ui.painter().rect_filled(lcd, g.l(2.0), if resp.hovered() { Color32::from_rgb(50, 8, 8) } else { Color32::from_rgb(30, 4, 4) });
+    text(ui, g, 704.0, 124.5, &note, 9.0, RED_LED);
+    let off = if cents == 0 { "in tune".to_string() } else { format!("{cents:+} ct") };
+    text(ui, g, 704.0, 132.0, &off, 5.0, Color32::from_rgb(200, 60, 50));
+    if resp
+        .on_hover_text(format!("FREQ note: {note} {cents:+} cents ({:.1} Hz). Click to tune exactly to {note}.", crate::params::volts_to_hz(tune)))
+        .clicked()
+    {
+        access.set_gesture(tune_id, crate::params::snap_to_note(tune).clamp(0.0, 10.0));
+        state.trig_req.fetch_or(1 << ch, Relaxed);
+    }
+
+    // INSTRUMENT selector: the LCD reloads the instrument's own sound, the arrows pick another
+    let lcd = g.r(678.0, 141.0, 724.0, 157.0);
+    let lr = ui.interact(lcd, Id::new(("mp7_inst_lcd", ch)), g.sense(Sense::click()));
+    ui.painter().rect_filled(lcd, g.l(2.0), if lr.hovered() { Color32::from_rgb(50, 8, 8) } else { Color32::from_rgb(30, 4, 4) });
+    text(ui, g, 701.0, 149.0, mp7::INSTRUMENT_SHORT[inst], 6.5, RED_LED);
+    let left = ui.interact(g.r(679.0, 160.0, 695.0, 172.0), Id::new(("mp7_inst_dn", ch)), g.sense(Sense::click()));
+    let right = ui.interact(g.r(707.0, 160.0, 723.0, 172.0), Id::new(("mp7_inst_up", ch)), g.sense(Sense::click()));
+    let tri = |x: f32, dir: f32| vec![g.p(x - 4.0 * dir, 166.0), g.p(x + 4.0 * dir, 161.5), g.p(x + 4.0 * dir, 170.5)];
+    let col = |r: &Response| if r.hovered() { ORANGE_HI } else { INK };
+    ui.painter().add(Shape::convex_polygon(tri(687.0, 1.0), col(&left), Stroke::NONE));
+    ui.painter().add(Shape::convex_polygon(tri(715.0, -1.0).into_iter().rev().collect(), col(&right), Stroke::NONE));
+    text(ui, g, 701.0, 177.0, "INSTRUMENT", 4.8, gold);
+    let n = mp7::NUM_INSTRUMENTS;
+    let pick = if left.on_hover_text("Previous MP7 instrument").clicked() {
+        Some((inst + n - 1) % n)
+    } else if right.on_hover_text("Next MP7 instrument").clicked() {
+        Some((inst + 1) % n)
+    } else if lr
+        .on_hover_text(format!("{}: click to bring back its own sound", mp7::INSTRUMENT_NAMES[inst]))
+        .clicked()
+    {
+        Some(inst)
+    } else {
+        None
+    };
+    if let Some(i) = pick {
+        load_mp7_instrument(access, ch, i);
+        state.trig_req.fetch_or(1 << ch, Relaxed);
+        say(st, Some(format!("Voice {}: MP7 {}", VOICE_LETTERS[ch], mp7::INSTRUMENT_NAMES[i])), now);
+    }
+
+    // DARK switch (the LP/HP switch's place)
+    let dark_id = ParamId::Voice(ch, VoiceParam::FilterHp);
+    let dark = access.get(dark_id) >= FILTER_HP_THRESHOLD;
+    if toggle_switch(ui, g, Id::new(("mod_hp", ch)), 704.0, 282.0, dark)
+        .on_hover_text("NORM / DARK: DARK rounds off the top, like a worn old box")
+        .clicked()
+    {
+        access.begin(dark_id);
+        access.set(dark_id, if dark { 10.0 } else { 0.0 });
+        access.set(dark_id, if dark { 0.0 } else { 10.0 });
+        access.end(dark_id);
+    }
+    text(ui, g, 692.0, 296.0, "NORM", 5.0, INK);
+    text(ui, g, 716.0, 296.0, "DARK", 5.0, INK);
+    text(ui, g, 659.0, 316.0, &format!("MP7  ·  {}", mp7::INSTRUMENT_NAMES[inst].to_uppercase()), 8.0, gold);
+}
+
+/// RAND on the MP7 engine: the instrument's own sound, each used knob moved a little at random
+/// (up to about a sixth of its travel), so it stays recognisable.
+fn randomize_mp7_voice(access: &dyn ParamAccess, st: &mut UiState, ch: usize, inst: usize) {
+    let base = mp7::preset(inst);
+    let labels = mp7::knob_labels(inst);
+    for (i, p) in crate::params::VOICE_PARAMS.iter().enumerate().take(12) {
+        if labels[i].is_none() {
+            continue;
+        }
+        let r = st.rand15() as f32 / 32767.0 * 2.0 - 1.0;
+        let v = (base[i] + r * 1.6).clamp(0.0, 9.99999);
+        access.set_gesture(ParamId::Voice(ch, *p), v);
     }
 }
 

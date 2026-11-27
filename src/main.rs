@@ -688,6 +688,17 @@ fn main() -> eframe::Result<()> {
 
     let store = Arc::new(Store::new());
     let state = Arc::new(SharedState::default());
+    // --kit <0..17 | mp7> loads that kit at start (17 = MP7), e.g. for pictures
+    if let Some(k) = args.iter().position(|a| a == "--kit").and_then(|i| args.get(i + 1)).and_then(|k| {
+        if k.eq_ignore_ascii_case("mp7") {
+            Some(ritmo6_core::params::MP7_KIT_CHOICE)
+        } else {
+            k.parse::<usize>().ok().filter(|k| *k < ritmo6_core::params::NUM_KIT_CHOICES)
+        }
+    }) {
+        state.kit.store(k as u8, Relaxed);
+        ritmo6_core::params::apply_kit(&*store, k);
+    }
     if chain_demo {
         for (i, p) in [1u8, 3, 12, 1, 7, 14].iter().enumerate() {
             state.chain[i].store(*p, Relaxed);

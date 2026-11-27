@@ -3,11 +3,30 @@
 **Free 6-voice analog-style drum machine — VST3 · CLAP · standalone (Windows 64-bit)**
 *Boîte à rythmes analogique 6 voix, gratuite — VST3 · CLAP · autonome (Windows 64 bits)*
 
-**Version 2.3.0** · [Download / Télécharger](../../releases/latest)
+**Version 2.4.1** · [Download / Télécharger](../../releases/latest)
 
 ![Ritmo-6 user manual](manual/user-manual-ritmo6.png)
 
 *Mode d'emploi en français : [manual/mode-emploi-ritmo6.png](manual/mode-emploi-ritmo6.png)*
+
+## What's new in 2.4 / Nouveautés de la 2.4
+A third sound engine, **MP7**: very analog 1960s rhythm-box instruments in the spirit of the Mini Pops 7 —
+swept sine drums under straight-line envelopes, filtered transistor noise, ringing resonators and click trains.
+**2.4.1** retunes every MP7 instrument on a vintage rhythm machine of that family (pitches, envelopes, sweeps,
+noise bands; the quijada now rattles at 25 clicks a second for about 1.5 s, the guiro scrapes at 20 a second). The **SOUND** switch now has three
+positions: **MINI · ORIG · MP7**. On MP7, each voice's module chooses one of 15 instruments with the arrows under
+its display: Bass Drum, Snare 1, Snare 2, Rimshot, Claves, Cowbell, Small Bongo, Large Bongo, Conga, Hihat,
+Cymbal 1, Cymbal 2, Tambourine, Guiro and **Quijada** (the rattling jawbone). Choosing an instrument gives the voice
+its sound; the knobs then read FREQ, DECAY / LENGTH, LEVEL, ATTACK, FREQ 2 / SWEEP, RATE, DENSITY, LEVEL 2,
+DECAY 2 / SWEEP TIME / RING, TICK, HIGHPASS, RESO / DRIVE and NORM / DARK (unused ones are dimmed). The KIT selector has a new **MP7** kit
+(after KIT 16): bass drum, snare, conga, claves, hihat and quijada.
+
+*Troisième moteur de son, **MP7** : des instruments très analogiques façon boîte à rythmes des années 60 (Mini Pops 7).
+Le sélecteur **SOUND** a trois positions (MINI · ORIG · MP7) ; en MP7, le module de chaque voix choisit l'un des
+15 instruments (dont le **Quijada**) avec les flèches sous son afficheur. Nouveau kit **MP7** dans le sélecteur de kits.
+Les anciens projets et banques s'ouvrent sans changement (MP7 éteint).*
+
+The MP7 engine is Ritmo-6's own code: it contains no code and no recordings from any other software.
 
 ## What's new in 2.3 / Nouveautés de la 2.3
 SETUP ▸ **About**: a link to the website ([geraniumproduction.be/ritmo6](https://www.geraniumproduction.be/ritmo6)) and a
@@ -60,7 +79,8 @@ de chances de jouer) et **LENGTH** (chaque voix boucle sur sa propre longueur : 
 
 ## Features / Fonctions
 - 6 synthesized voices (tone oscillator with pitch sweep + filtered noise), each with its own sound module, RAND, LOAD/SAVE
-- Two sound engines: **MINI** (punchy, Minipops-style) and **ORIG**; 16 factory kits
+- Three sound engines: **MINI** (punchy, Minipops-style), **ORIG** and **MP7** (15 vintage rhythm-box
+  instruments, quijada and guiro included); 16 factory kits + the MINI and MP7 kits
 - 16-step × 6-row sequencer, 16 programs, RESET / COPY / PASTE / RANDOM
 - Per step: **MULTIPLY** (1–4 hits), **ACCENT**, **PROBABILITY**; per voice: its own **loop length**
 - Retrigger saturation: close hits overload gradually, like on an 808 / 909 (see [SATURATION.md](SATURATION.md))

@@ -30,7 +30,7 @@ impl<'a> PersistentField<'a, PatternData> for PatternStore {
 fn fparam(id: ParamId) -> FloatParam {
     let s = rp::spec(id);
     let name = match id {
-        ParamId::Level(c) | ParamId::Pan(c) | ParamId::Voice(c, _) | ParamId::Send(c, _) => {
+        ParamId::Level(c) | ParamId::Pan(c) | ParamId::Voice(c, _) | ParamId::Send(c, _) | ParamId::Mp7Inst(c) => {
             format!("{} {}", VOICE_LETTERS[c], s.name)
         }
         _ => s.name.to_string(),
@@ -160,6 +160,34 @@ impl ChannelParams {
             send_delay: fparam(ParamId::Send(c, 2)),
             send_spring: fparam(ParamId::Send(c, 3)),
         }
+    }
+}
+
+/// MP7 instrument of each voice (added in 2.4, after everything else).
+#[derive(Params)]
+pub struct Mp7Params {
+    #[id = "mp7i_a"]
+    pub a: FloatParam,
+    #[id = "mp7i_b"]
+    pub b: FloatParam,
+    #[id = "mp7i_c"]
+    pub c: FloatParam,
+    #[id = "mp7i_d"]
+    pub d: FloatParam,
+    #[id = "mp7i_e"]
+    pub e: FloatParam,
+    #[id = "mp7i_f"]
+    pub f: FloatParam,
+}
+
+impl Mp7Params {
+    fn new() -> Self {
+        let i = |c| fparam(ParamId::Mp7Inst(c)).with_step_size(1.0);
+        Mp7Params { a: i(0), b: i(1), c: i(2), d: i(3), e: i(4), f: i(5) }
+    }
+
+    fn voice(&self, c: usize) -> &FloatParam {
+        [&self.a, &self.b, &self.c, &self.d, &self.e, &self.f][c.min(NUM_CH - 1)]
     }
 }
 
@@ -335,6 +363,11 @@ pub struct RitmoParams {
     pub accent: FloatParam,
     #[nested(group = "FX")]
     pub fx: FxParams,
+    /// MP7 sound engine (2.4): on = MP7, off = MINI / ORIGINAL as the "sound" switch says
+    #[id = "mp7"]
+    pub mp7: BoolParam,
+    #[nested(group = "MP7")]
+    pub mp7_inst: Mp7Params,
 }
 
 enum PRef<'a> {
@@ -360,6 +393,8 @@ impl RitmoParams {
             swing: fparam(ParamId::Swing),
             accent: fparam(ParamId::Accent),
             fx: FxParams::new(),
+            mp7: bparam(ParamId::Mp7),
+            mp7_inst: Mp7Params::new(),
         }
     }
 
@@ -382,6 +417,8 @@ impl RitmoParams {
                 F([&ch.send_phaser, &ch.send_dist, &ch.send_delay, &ch.send_spring][k.min(3)])
             }
             ParamId::Fx(p) => self.fx.pref(p),
+            ParamId::Mp7 => B(&self.mp7),
+            ParamId::Mp7Inst(c) => F(self.mp7_inst.voice(c)),
             ParamId::Voice(c, p) => {
                 let ch = &self.ch[c];
                 match p {

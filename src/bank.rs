@@ -131,6 +131,8 @@ pub struct ModuleFile {
     pub values: BTreeMap<String, f32>,
 }
 
+const MP7_MODULE_KEY: &str = "mp7_instrument";
+
 fn voice_key(p: VoiceParam) -> &'static str {
     match p {
         VoiceParam::ToneTune => "tone_tune",
@@ -166,6 +168,8 @@ pub fn param_key(id: ParamId) -> String {
         ParamId::SoundDrift => "sound_drift".into(),
         ParamId::Swing => "swing".into(),
         ParamId::Accent => "accent".into(),
+        ParamId::Mp7 => "mp7".into(),
+        ParamId::Mp7Inst(c) => format!("{}_mp7_instrument", l(c)),
         ParamId::Voice(c, p) => format!("{}_{}", l(c), voice_key(p)),
         ParamId::Send(c, k) => format!("{}_send_{}", l(c), crate::params::FX_BUS_NAMES[k].to_lowercase()),
         ParamId::Fx(p) => format!("fx_{}", format!("{p:?}").to_lowercase()),
@@ -184,9 +188,9 @@ pub fn bank_from_json(text: &str, access: &dyn ParamAccess, state: &SharedState)
     for id in ParamId::all() {
         if let Some(v) = f.params.get(&param_key(id)) {
             access.set_gesture(id, *v);
-        } else if id.is_fx() || id == ParamId::Accent {
-            // banks saved before the FX expansion: sends at zero and FX at their defaults,
-            // so the bank sounds exactly as it did
+        } else if id.is_fx() || matches!(id, ParamId::Accent | ParamId::Mp7 | ParamId::Mp7Inst(_)) {
+            // banks saved before the FX expansion (or before MP7): sends at zero, FX at their
+            // defaults and MP7 off, so the bank sounds exactly as it did
             access.set_gesture(id, crate::params::spec(id).default);
         }
     }
@@ -194,10 +198,12 @@ pub fn bank_from_json(text: &str, access: &dyn ParamAccess, state: &SharedState)
 }
 
 pub fn module_to_json(access: &dyn ParamAccess, ch: usize) -> String {
-    let values = VOICE_PARAMS
+    let mut values: BTreeMap<String, f32> = VOICE_PARAMS
         .iter()
         .map(|p| (voice_key(*p).to_string(), access.get(ParamId::Voice(ch, *p))))
         .collect();
+    // the MP7 instrument goes with the sound (ignored by 2.3 and older)
+    values.insert(MP7_MODULE_KEY.into(), access.get(ParamId::Mp7Inst(ch)));
     let f = ModuleFile { format: "ritmo6-module-1".into(), values };
     serde_json::to_string_pretty(&f).unwrap_or_default()
 }
@@ -208,6 +214,9 @@ pub fn module_from_json(text: &str, access: &dyn ParamAccess, ch: usize) -> Resu
         if let Some(v) = f.values.get(voice_key(p)) {
             access.set_gesture(ParamId::Voice(ch.min(NUM_CH - 1), p), *v);
         }
+    }
+    if let Some(v) = f.values.get(MP7_MODULE_KEY) {
+        access.set_gesture(ParamId::Mp7Inst(ch.min(NUM_CH - 1)), *v);
     }
     Ok(())
 }

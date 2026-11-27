@@ -32,6 +32,35 @@ pub const MINI_KIT: Kit = Kit {
     tempo: 5.556,
 };
 
+/// The MP7 instruments of the MP7 kit, voice by voice (indexes into mp7::INSTRUMENT_NAMES):
+/// A bass drum, B snare 1, C conga, D claves, E hihat, F quijada, the same roles as the MINI kit
+/// so the demo rhythms play on it.
+pub const MP7_INSTRUMENTS: [usize; NUM_CH] = [
+    crate::mp7::BASS,
+    crate::mp7::SNARE1,
+    crate::mp7::CONGA,
+    crate::mp7::CLAVES,
+    crate::mp7::HIHAT,
+    crate::mp7::QUIJADA,
+];
+
+/// MP7 kit (KIT selector after KIT 16): the presets of `MP7_INSTRUMENTS`, as mp7::preset gives
+/// them (checked by a test), with the MINI kit's mixer and tempo.
+pub const MP7_KIT: Kit = Kit {
+    voices: [
+        [2.25, 5.0, 10.0, 5.8048, 1.2, 0.0, 0.0, 0.0, 5.0, 0.3886, 1.5, 0.0, 0.0],
+        [8.3543, 5.2707, 9.0, 2.9024, 5.0, 0.0, 0.0, 0.0, 1.0228, 7.3219, 1.0, 1.5, 0.0],
+        [3.739, 4.71, 8.5, 7.0184, 0.626, 0.0, 0.0, 0.0, 0.0, 1.1255, 1.0, 0.0, 0.0],
+        [7.2908, 2.1927, 8.0, 0.0, 6.25, 0.0, 0.0, 0.0, 1.6078, 3.1255, 0.0, 0.5, 0.0],
+        [8.5434, 2.4717, 9.0, 5.8048, 5.0, 0.0, 0.0, 0.0, 1.0228, 0.0, 5.4, 0.0, 0.0],
+        [7.5629, 7.2516, 10.0, 1.25, 5.1388, 0.8625, 2.0, 5.0, 0.0, 6.1844, 7.5, 0.5, 0.0],
+    ],
+    volume: [6.4; 6],
+    pan: [0.0; 6],
+    master: 6.4,
+    tempo: 5.556,
+};
+
 /// Turn "x...x..." into a step bit mask (bit 0 = step 1).
 pub fn pat(s: &str) -> u16 {
     let mut m = 0u16;
@@ -76,4 +105,19 @@ pub fn default_programs() -> Vec<Program> {
         v.push(p("", "", "", "", "", "", 16));
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mp7_kit_matches_the_instrument_presets() {
+        for c in 0..NUM_CH {
+            let p = crate::mp7::preset(MP7_INSTRUMENTS[c]);
+            for i in 0..13 {
+                assert!((MP7_KIT.voices[c][i] - p[i]).abs() < 0.001, "voice {c} knob {i}: {} vs {}", MP7_KIT.voices[c][i], p[i]);
+            }
+        }
+    }
 }

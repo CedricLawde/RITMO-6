@@ -4,6 +4,7 @@
 //! Conversions follow the original engine (see MECHANICS.md for addresses).
 
 use crate::classic::Classic;
+use crate::mp7::Mp7;
 use crate::params::{env_seconds, volts_to_hz, FILTER_HP_THRESHOLD};
 
 /// The original's knob voltages for one voice.
@@ -27,6 +28,20 @@ pub struct VoiceSettings {
     pub nudge: f32,
     /// share of SOUND DRIFT for this voice, 0..1 (column B)
     pub drift_amount: f32,
+    /// MP7 engine: the instrument this voice plays (0..14, see mp7::INSTRUMENT_NAMES)
+    pub mp7_inst: f32,
+}
+
+/// The three sound engines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SoundEngine {
+    /// MINI: the punchy first-day engine (src/classic.rs)
+    #[default]
+    Mini,
+    /// ORIGINAL: the model decoded from the original plugin
+    Original,
+    /// MP7: Mini Pops 7 style instruments (src/mp7.rs)
+    Mp7,
 }
 
 impl VoiceSettings {
@@ -48,6 +63,7 @@ impl VoiceSettings {
             pan_random: v[13],
             nudge: v[14],
             drift_amount: v[15],
+            mp7_inst: 0.0,
         }
     }
 }
@@ -124,6 +140,7 @@ pub struct Voice {
     /// Pan offset in volts drawn at the last hit (Pan Random).
     pub pan_offset: f32,
     classic: Classic,
+    mp7: Mp7,
     /// Retrigger overload, as on the TR-808 / TR-909 (see SATURATION.md): every hit adds one
     /// unit of charge on top of what is left from the previous hits, and the charge leaks away
     /// with a time constant tied to the voice's own decay. An isolated hit leaves 1 (clean);
@@ -165,6 +182,7 @@ impl Voice {
             rng: seed | 1,
             pan_offset: 0.0,
             classic: Classic::default(),
+            mp7: Mp7::default(),
             charge: 0.0,
             drift_pitch_v: 0.0,
             drift_decay_v: 0.0,
@@ -204,7 +222,7 @@ impl Voice {
     }
 
     /// Render one sample with SOUND DRIFT and MULTIPLY saturation applied around the engine.
-    pub fn render(&mut self, s: &VoiceSettings, sr: f32, classic: bool) -> f32 {
+    pub fn render(&mut self, s: &VoiceSettings, sr: f32, engine: SoundEngine) -> f32 {
         let mut d = *s;
         if self.drift_gain != 1.0 || self.drift_pitch_v != 0.0 {
             d.tone_tune += self.drift_pitch_v;
@@ -213,7 +231,7 @@ impl Voice {
             d.noise_decay += self.drift_decay_v;
             d.filter_freq += self.drift_cutoff_v;
         }
-        let raw = self.render_engine(&d, sr, classic) * self.drift_gain * self.accent_gain;
+        let raw = self.render_engine(&d, sr, engine) * self.drift_gain * self.accent_gain;
 
         // leak: a fifth of the voice's decay time (15..300 ms), so a short hat recovers in a
         // few milliseconds and a long kick keeps some charge for a whole 16th note
@@ -252,14 +270,22 @@ impl Voice {
         self.noise_env.trigger();
         self.filter_env.trigger();
         self.classic.trigger();
+        let seed = self.rng;
+        self.mp7.trigger(seed);
         self.pan_offset = if pan_random > 0.0 { self.rand() * 5.0 * pan_random.clamp(0.0, 1.0) } else { 0.0 };
     }
 
-    /// `classic` picks the MINI sound (the first-day engine) instead of the decoded original.
-    fn render_engine(&mut self, s: &VoiceSettings, sr: f32, classic: bool) -> f32 {
-        if classic {
-            let n = self.rand();
-            return self.classic.render(s, sr, n);
+    /// MINI (the first-day engine), the decoded ORIGINAL, or MP7 (Mini Pops 7 style).
+    fn render_engine(&mut self, s: &VoiceSettings, sr: f32, engine: SoundEngine) -> f32 {
+        match engine {
+            SoundEngine::Mini => {
+                let n = self.rand();
+                return self.classic.render(s, sr, n);
+            }
+            SoundEngine::Mp7 => {
+                return self.mp7.render(s, crate::mp7::instrument_index(s.mp7_inst), sr);
+            }
+            SoundEngine::Original => {}
         }
         if self.tone_env.idle() && self.noise_env.idle() {
             return 0.0;

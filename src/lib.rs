@@ -7,6 +7,7 @@ pub mod dsp;
 pub mod engine;
 pub mod fx;
 pub mod kits;
+pub mod mp7;
 pub mod params;
 pub mod presets;
 pub mod setup;

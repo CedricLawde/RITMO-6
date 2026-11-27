@@ -55,7 +55,7 @@ pub struct SharedState {
     pub host_driven: AtomicBool,
     /// Last tempo used, as f32 bits (for display).
     pub bpm_bits: AtomicU32,
-    /// Factory kit last loaded (0..16).
+    /// Kit last loaded (0 MINI, 1..16 factory kits, 17 MP7).
     pub kit: AtomicU8,
     /// KICK button of the spring reverb (taken by the audio thread).
     pub spring_kick: AtomicBool,
@@ -342,7 +342,7 @@ impl SharedState {
         self.program.store(d.program.min(NUM_PROGS as u8 - 1), Relaxed);
         self.midi_channel.store(d.midi_channel.min(16), Relaxed);
         self.keyb_ctrl.store(d.keyb_ctrl, Relaxed);
-        self.kit.store(d.kit.min(16), Relaxed);
+        self.kit.store(d.kit.min(crate::params::MP7_KIT_CHOICE as u8), Relaxed);
         let mode = d.pad_mode.unwrap_or(if d.multiply_mode { PAD_MULTI } else { PAD_NOTE });
         self.pad_mode.store(mode.min(NUM_PAD_MODES - 1), Relaxed);
         for (i, slot) in self.chain.iter().enumerate() {

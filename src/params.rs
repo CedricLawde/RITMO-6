@@ -2,12 +2,14 @@
 //! Knobs keep the original's units: volts 0..10 (pans -5..+5 V). See MECHANICS.md.
 
 use crate::kits::{Kit, KITS};
-use crate::presets::MINI_KIT;
+use crate::presets::{MINI_KIT, MP7_INSTRUMENTS, MP7_KIT};
 
 pub const NUM_CH: usize = 6;
 pub const NUM_STEPS: usize = 16;
 pub const NUM_PROGS: usize = 16;
 pub const NUM_KITS: usize = 16;
+/// The KIT selector's MP7 kit (after MINI and the 16 factory kits).
+pub const MP7_KIT_CHOICE: usize = NUM_KITS + 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum VoiceParam {
@@ -77,6 +79,10 @@ pub enum ParamId {
     /// comes last in the parameter list and older projects keep their numbering.
     Accent,
     Voice(usize, VoiceParam),
+    /// MP7 sound engine on (added in 2.4, after ACCENT): it takes the place of MINI / ORIGINAL.
+    Mp7,
+    /// The MP7 instrument voice `c` plays (0..14, see mp7::INSTRUMENT_NAMES). Added in 2.4.
+    Mp7Inst(usize),
     /// FX send of voice `c` to bus `k` (0 PHASER, 1 DIST, 2 DELAY, 3 SPRING), 0..1.
     Send(usize, usize),
     /// A setting of the shared FX section.
@@ -217,7 +223,7 @@ pub fn fx_level_gain(v: f32) -> f32 {
 
 pub const DELAY_MODE_NAMES: [&str; 3] = ["TAPE", "BBD", "MOD"];
 
-pub const NUM_PARAMS: usize = 26 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS;
+pub const NUM_PARAMS: usize = 27 + NUM_CH + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS;
 
 impl ParamId {
     pub fn index(self) -> usize {
@@ -236,6 +242,8 @@ impl ParamId {
             ParamId::Send(c, k) => 25 + NUM_CH * VOICE_PARAMS.len() + c * NUM_FX_BUSES + k,
             ParamId::Fx(p) => 25 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + p.index(),
             ParamId::Accent => 25 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS,
+            ParamId::Mp7 => 26 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS,
+            ParamId::Mp7Inst(c) => 27 + NUM_CH * VOICE_PARAMS.len() + NUM_CH * NUM_FX_BUSES + NUM_FX_PARAMS + c,
         }
     }
 
@@ -271,6 +279,10 @@ impl ParamId {
             v.push(ParamId::Fx(p));
         }
         v.push(ParamId::Accent);
+        v.push(ParamId::Mp7);
+        for c in 0..NUM_CH {
+            v.push(ParamId::Mp7Inst(c));
+        }
         v
     }
 
@@ -301,6 +313,10 @@ pub enum Show {
     OnOff,
     Bpm,
     Sound,
+    /// MP7 engine on / off.
+    Mp7,
+    /// The name of an MP7 instrument.
+    Mp7Inst,
     /// Two-sided drift: 50 % = none, below = late, above = early.
     Drift,
     /// -1..1 = half a step early .. half a step late.
@@ -414,6 +430,8 @@ impl Spec {
             Show::OnOff => (if plain >= 0.5 { "On" } else { "Off" }).to_string(),
             Show::Bpm => format!("{:.0} BPM ({plain:.2} V)", internal_bpm(plain)),
             Show::Sound => (if plain >= 0.5 { "Original" } else { "Mini" }).to_string(),
+            Show::Mp7 => (if plain >= 0.5 { "On (MP7 sound)" } else { "Off" }).to_string(),
+            Show::Mp7Inst => crate::mp7::INSTRUMENT_NAMES[crate::mp7::instrument_index(plain)].to_string(),
             Show::Drift => {
                 let amount = ((plain - 0.5) * 200.0).round();
                 if amount.abs() < 1.0 {
@@ -550,12 +568,15 @@ pub fn voice_spec(p: VoiceParam) -> Spec {
     }
 }
 
-/// Kits offered by the KIT selector: 0 = MINI (the first-day sounds), 1..=16 = factory kits.
-pub const NUM_KIT_CHOICES: usize = NUM_KITS + 1;
+/// Kits offered by the KIT selector: 0 = MINI (the first-day sounds), 1..=16 = factory kits,
+/// 17 = MP7 (Mini Pops 7 style instruments).
+pub const NUM_KIT_CHOICES: usize = NUM_KITS + 2;
 
 pub fn kit_choice(i: usize) -> &'static Kit {
     if i == 0 {
         &MINI_KIT
+    } else if i == MP7_KIT_CHOICE {
+        &MP7_KIT
     } else {
         &KITS[(i - 1).min(NUM_KITS - 1)]
     }
@@ -677,6 +698,24 @@ pub fn spec(id: ParamId) -> Spec {
             show: Show::Percent,
         },
         ParamId::Fx(p) => fx_spec(p),
+        ParamId::Mp7 => Spec {
+            name: "MP7 Sound",
+            short: "MP7",
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            curve: Curve::Toggle,
+            show: Show::Mp7,
+        },
+        ParamId::Mp7Inst(c) => Spec {
+            name: "MP7 Instrument",
+            short: "INSTR",
+            min: 0.0,
+            max: (crate::mp7::NUM_INSTRUMENTS - 1) as f32,
+            default: MP7_INSTRUMENTS[c.min(NUM_CH - 1)] as f32,
+            curve: Curve::Linear,
+            show: Show::Mp7Inst,
+        },
         ParamId::Voice(c, p) => {
             let mut s = voice_spec(p);
             // kits hold the 13 sound knobs; Pan Random, Nudge and Drift keep their own defaults
@@ -741,11 +780,18 @@ pub trait ParamAccess {
     }
 }
 
-/// Load a kit choice (0 = MINI, 1..=16 = factory kits) into the parameters: sounds, volumes,
-/// pans, master, tempo, and the matching sound engine.
+/// Load a kit choice (0 = MINI, 1..=16 = factory kits, 17 = MP7) into the parameters: sounds,
+/// volumes, pans, master, tempo, and the matching sound engine (and the MP7 instruments).
 pub fn apply_kit(access: &dyn ParamAccess, kit: usize) {
     let k = kit_choice(kit);
-    access.set_gesture(ParamId::Sound, if kit == 0 { 0.0 } else { 1.0 });
+    let mp7 = kit == MP7_KIT_CHOICE;
+    access.set_gesture(ParamId::Sound, if kit == 0 || mp7 { 0.0 } else { 1.0 });
+    access.set_gesture(ParamId::Mp7, if mp7 { 1.0 } else { 0.0 });
+    if mp7 {
+        for c in 0..NUM_CH {
+            access.set_gesture(ParamId::Mp7Inst(c), MP7_INSTRUMENTS[c] as f32);
+        }
+    }
     for c in 0..NUM_CH {
         for (i, p) in VOICE_PARAMS.iter().enumerate().take(13) {
             access.set_gesture(ParamId::Voice(c, *p), k.voices[c][i]);
@@ -775,4 +821,160 @@ mod note_tests {
 /// Level of an accented hit for the ACCENT knob (0..1): x1 to x1.6 (+4 dB).
 pub fn accent_gain(knob: f32) -> f32 {
     1.0 + 0.6 * knob.clamp(0.0, 1.0)
+}
+
+/// The engine a set of parameters plays (MP7 takes the place of MINI / ORIGINAL when on).
+pub fn sound_engine(access: &dyn ParamAccess) -> crate::dsp::SoundEngine {
+    use crate::dsp::SoundEngine;
+    if access.get(ParamId::Mp7) >= 0.5 {
+        SoundEngine::Mp7
+    } else if access.get(ParamId::Sound) >= 0.5 {
+        SoundEngine::Original
+    } else {
+        SoundEngine::Mini
+    }
+}
+
+/// Choose the sound engine from the panel. Turning MP7 on gives every voice the sound of the
+/// MP7 instrument it is set to (the knobs mean other things on MP7); the mixer stays as it is.
+pub fn set_sound_engine(access: &dyn ParamAccess, engine: crate::dsp::SoundEngine) {
+    use crate::dsp::SoundEngine;
+    let was_mp7 = access.get(ParamId::Mp7) >= 0.5;
+    match engine {
+        SoundEngine::Mini => {
+            access.set_gesture(ParamId::Mp7, 0.0);
+            access.set_gesture(ParamId::Sound, 0.0);
+        }
+        SoundEngine::Original => {
+            access.set_gesture(ParamId::Mp7, 0.0);
+            access.set_gesture(ParamId::Sound, 1.0);
+        }
+        SoundEngine::Mp7 => {
+            access.set_gesture(ParamId::Mp7, 1.0);
+            if !was_mp7 {
+                for c in 0..NUM_CH {
+                    let inst = crate::mp7::instrument_index(access.get(ParamId::Mp7Inst(c)));
+                    load_mp7_instrument(access, c, inst);
+                }
+            }
+        }
+    }
+}
+
+/// Give voice `c` an MP7 instrument with its preset sound.
+pub fn load_mp7_instrument(access: &dyn ParamAccess, c: usize, inst: usize) {
+    let inst = inst.min(crate::mp7::NUM_INSTRUMENTS - 1);
+    access.set_gesture(ParamId::Mp7Inst(c), inst as f32);
+    for (i, v) in crate::mp7::preset(inst).iter().enumerate() {
+        access.set_gesture(ParamId::Voice(c, VOICE_PARAMS[i]), *v);
+    }
+}
+
+#[cfg(test)]
+mod mp7_param_tests {
+    use super::*;
+    use crate::dsp::SoundEngine;
+    use std::sync::Mutex;
+
+    /// Plain parameter memory for tests.
+    struct Mem(Mutex<Vec<f32>>);
+    impl Mem {
+        fn new() -> Self {
+            let mut v = vec![0.0; NUM_PARAMS];
+            for id in ParamId::all() {
+                v[id.index()] = spec(id).default;
+            }
+            Mem(Mutex::new(v))
+        }
+    }
+    impl ParamAccess for Mem {
+        fn get(&self, id: ParamId) -> f32 {
+            self.0.lock().unwrap()[id.index()]
+        }
+        fn begin(&self, _: ParamId) {}
+        fn set(&self, id: ParamId, plain: f32) {
+            let s = spec(id);
+            self.0.lock().unwrap()[id.index()] = plain.clamp(s.min, s.max);
+        }
+        fn end(&self, _: ParamId) {}
+    }
+
+    #[test]
+    fn every_parameter_has_its_own_slot() {
+        let all = ParamId::all();
+        assert_eq!(all.len(), NUM_PARAMS);
+        let mut seen = vec![false; NUM_PARAMS];
+        for id in all {
+            assert!(!seen[id.index()], "{id:?} shares a slot");
+            seen[id.index()] = true;
+        }
+        // the 2.3 parameters keep their numbers: MP7 comes after ACCENT
+        assert_eq!(ParamId::Accent.index(), 176);
+        assert_eq!(ParamId::Mp7.index(), 177);
+    }
+
+    #[test]
+    fn mp7_kit_turns_the_mp7_engine_on_and_other_kits_turn_it_off() {
+        let m = Mem::new();
+        assert_eq!(sound_engine(&m), SoundEngine::Mini, "MINI by default");
+        apply_kit(&m, MP7_KIT_CHOICE);
+        assert_eq!(sound_engine(&m), SoundEngine::Mp7);
+        assert_eq!(crate::mp7::instrument_index(m.get(ParamId::Mp7Inst(5))), crate::mp7::QUIJADA);
+        assert!((m.get(ParamId::Voice(5, VoiceParam::ToneTune)) - MP7_KIT.voices[5][0]).abs() < 1e-6);
+        apply_kit(&m, 3);
+        assert_eq!(sound_engine(&m), SoundEngine::Original);
+        apply_kit(&m, 0);
+        assert_eq!(sound_engine(&m), SoundEngine::Mini);
+    }
+
+    #[test]
+    fn switching_to_mp7_gives_each_voice_its_instrument_sound() {
+        let m = Mem::new();
+        m.set(ParamId::Mp7Inst(2), crate::mp7::GUIRO as f32);
+        set_sound_engine(&m, SoundEngine::Mp7);
+        assert_eq!(sound_engine(&m), SoundEngine::Mp7);
+        let p = crate::mp7::preset(crate::mp7::GUIRO);
+        for (i, vp) in VOICE_PARAMS.iter().enumerate().take(13) {
+            assert!((m.get(ParamId::Voice(2, *vp)) - p[i]).abs() < 1e-6);
+        }
+        // back to ORIGINAL keeps the knobs; MP7 off
+        set_sound_engine(&m, SoundEngine::Original);
+        assert_eq!(sound_engine(&m), SoundEngine::Original);
+        assert!((m.get(ParamId::Voice(2, VoiceParam::ToneTune)) - p[0]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn banks_from_2_3_open_without_mp7() {
+        let m = Mem::new();
+        apply_kit(&m, MP7_KIT_CHOICE);
+        let state = crate::state::SharedState::default();
+        let mut text = crate::bank::bank_to_json(&m, &state);
+        assert!(text.contains("\"mp7\"") && text.contains("\"f_mp7_instrument\""));
+        // a bank saved by 2.3: no MP7 keys at all
+        let mut f: crate::bank::BankFile = serde_json::from_str(&text).unwrap();
+        f.params.retain(|k, _| !k.contains("mp7"));
+        text = serde_json::to_string(&f).unwrap();
+        crate::bank::bank_from_json(&text, &m, &state).unwrap();
+        assert_eq!(sound_engine(&m), SoundEngine::Mini, "a 2.3 bank must play as it did");
+    }
+
+    #[test]
+    fn mp7_sound_plays_through_the_engine() {
+        use crate::engine::{Engine, Transport, Values};
+        let m = Mem::new();
+        apply_kit(&m, MP7_KIT_CHOICE);
+        let vals = Values::read(|id| m.get(id));
+        assert_eq!(vals.engine, SoundEngine::Mp7);
+        let state = crate::state::SharedState::default();
+        let mut e = Engine::new(48000.0);
+        e.note_on(&state, 0, crate::engine::BASE_NOTE + 5, 1.0); // F: quijada
+        e.begin_block(&state, &vals, &Transport::default());
+        let mut peak = 0.0f32;
+        for _ in 0..24000 {
+            let f = e.next_frame(&state, &vals);
+            assert!(f.left.is_finite());
+            peak = peak.max(f.voices[5].abs());
+        }
+        assert!(peak > 0.05 && peak < 2.0, "quijada through the engine: {peak}");
+    }
 }

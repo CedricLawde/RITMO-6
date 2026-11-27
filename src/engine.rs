@@ -1,6 +1,6 @@
 //! Sequencer clock, MIDI key map and mixer.
 
-use crate::dsp::{Voice, VoiceSettings};
+use crate::dsp::{SoundEngine, Voice, VoiceSettings};
 use crate::fx::{Fx, FxValues};
 use crate::params::{FX_PARAMS, NUM_FX_BUSES};
 use crate::params::{internal_bpm, internal_steps_per_sec, sync_division, ParamId, NUM_CH, SYNC_STEPS_PER_BEAT, VOICE_PARAMS};
@@ -30,8 +30,8 @@ pub struct Values {
     pub master: f32,
     pub tempo: f32,
     pub sync: bool,
-    /// MINI sound engine (true) or the decoded original (false).
-    pub classic: bool,
+    /// The sound engine: MINI, the decoded ORIGINAL or MP7.
+    pub engine: SoundEngine,
     /// TEMPO DRIFT 0..1 and SOUND DRIFT 0..1.
     pub tempo_drift: f32,
     pub sound_drift: f32,
@@ -54,7 +54,13 @@ impl Values {
             master: get(ParamId::Master),
             tempo: get(ParamId::Tempo),
             sync: get(ParamId::Sync) >= 0.5,
-            classic: get(ParamId::Sound) < 0.5,
+            engine: if get(ParamId::Mp7) >= 0.5 {
+                SoundEngine::Mp7
+            } else if get(ParamId::Sound) >= 0.5 {
+                SoundEngine::Original
+            } else {
+                SoundEngine::Mini
+            },
             tempo_drift: get(ParamId::TempoDrift).clamp(0.0, 1.0),
             sound_drift: get(ParamId::SoundDrift).clamp(0.0, 1.0),
             swing: get(ParamId::Swing).clamp(0.0, 1.0),
@@ -63,7 +69,9 @@ impl Values {
             fx: std::array::from_fn(|i| get(ParamId::Fx(FX_PARAMS[i]))),
             voices: std::array::from_fn(|c| {
                 let arr: [f32; 16] = std::array::from_fn(|i| get(ParamId::Voice(c, VOICE_PARAMS[i])));
-                VoiceSettings::from_array(&arr)
+                let mut v = VoiceSettings::from_array(&arr);
+                v.mp7_inst = get(ParamId::Mp7Inst(c));
+                v
             }),
         }
     }
@@ -642,7 +650,7 @@ impl Engine {
         let mut f = Frame::default();
         let mut bus = [[0.0f32; 2]; NUM_FX_BUSES];
         for ch in 0..NUM_CH {
-            let raw = self.voices[ch].render(&vals.voices[ch], self.sr, vals.classic);
+            let raw = self.voices[ch].render(&vals.voices[ch], self.sr, vals.engine);
             // Level Adj: linear, 10 V = unity.
             let gain = vals.level[ch] / 10.0;
             let v = raw * gain;
@@ -1039,7 +1047,7 @@ mod tests {
                 if i % step == 0 && i / step < hits {
                     v.strike(0.0, 0.0, false, 0.0);
                 }
-                let y = v.render(&s, sr, true);
+                let y = v.render(&s, sr, SoundEngine::Mini);
                 assert!(y.is_finite() && y.abs() <= 2.0);
                 if i >= step * (hits - 1) {
                     peak = peak.max(y.abs());
@@ -1162,7 +1170,7 @@ mod tests {
         let peak = |accent: f32| {
             let mut v = Voice::new(7);
             v.strike(0.0, 0.0, false, accent);
-            (0..9600).map(|_| v.render(&s, 48000.0, true).abs()).fold(0.0f32, f32::max)
+            (0..9600).map(|_| v.render(&s, 48000.0, SoundEngine::Mini).abs()).fold(0.0f32, f32::max)
         };
         let plain = peak(0.0);
         let half = peak(0.5);

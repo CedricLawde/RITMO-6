@@ -1,3 +1,40 @@
+# Ritmo-6 v2.4.1 (2026-11-27) — MP7 retuned on a vintage rhythm machine
+
+The 2.4.0 MP7 sounds were too far from the real thing: every instrument was retuned on a vintage rhythm
+machine of the Mini Pops family (its voice settings and measurements of its sounds). Ritmo-6 contains none of
+its code or recordings.
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| New voice builds | Bass drum, congas, bongos: sine whose pitch starts SWEEP octaves up and falls back in a straight line over SWEEP TIME, under a straight-line envelope (rise over ATTACK, fall to silence over DECAY, full sweep 2^(V-20/3) s, as the reference's envelope generators). Rimshot: the same with a narrow pulse swept 5 octaves down in ~10 ms. Hihat: band-passed noise, straight-line envelope heard squared (exponential amplifier). Tambourine: noise low-passed at NOISE BAND x FREQ times a square at FREQ (ring modulation), squared straight-line envelope. Guiro: steady scrape (no swell). Quijada: noise clicks (band at FREQ, each ringing for RING) instead of a resonator. Noise voices get a two-pole top cut half an octave above their band. Tambourine shakes removed (the reference plays one hit). | build, tests |
+| Values | From the reference's patch: bass 2.25 V (65 Hz) +0.6 oct sweep, 5 V envelope (decay inferred); low conga 4.987 V / 1.39 V / +0.313 oct over 0 V; high conga 5.018 V / 1.50 V / +0.42 oct over 5.43 V; bongo 3.739 V / 4.71 V / +0.313 oct; rim 1.981 V, +5 oct over ~0 V, 0 V envelope; hihat 8.534 V band, resonance 0.54, 2.47 V; tambourine square 8.53 V, noise LP 5.45 V res 0.78, 4.18 V. Measured on its recordings: claves 2153 Hz / 45 ms; cowbell 851 Hz + 4.7 kHz click, ~40 ms; snares noise 2.7-7 kHz, 0.38 / 0.43 s; cymbal 1 like its long snare (5-9 kHz, 1 s); guiro 4.1 kHz clicks at 20.4 Hz for 0.45 s; quijada 2.6 kHz clicks at 25 Hz over 1.5 s. Cymbal 2 has no counterpart (2.4.0 estimate kept). Mapping: Small Bongo = its high conga, Large Bongo = its low conga, Conga = its bongo (the lowest, longest). | same analysis run on the rebuilt WAVs (`mp7_wavs`): claves 2156 Hz -40 dB at 30 ms (reference 2153 Hz, 30 ms); cowbell 851-855 Hz; guiro ends at 0.46 s (0.44 s), peaks 3.5-4.6 kHz; quijada peaks 2.3-3.0 kHz (2.2-2.9 kHz), -40 dB at 1.1 s (1.24 s); snares peaks 2.7-5.7 kHz, -40 dB at 265 / 290 ms (254 / 289 ms). Rebuilt snares keep some content above 11 kHz the 22 kHz references can't have. **Not yet heard by the person.** |
+| Panel | Oscillator instruments show SWEEP and SWEEP TIME (in octaves and ms); the tambourine shows NOISE BAND; hover texts follow. Nothing else changed (the person asked to keep the panel as it is). | build |
+| MP7 kit | Same instruments, new presets (test `mp7_kit_matches_the_instrument_presets`). | 46 tests pass |
+| Not resolved | The bass drum's decay and pitch-sweep amount come from the reference's outer container, whose wiring wasn't fully decoded (5 V and 0.6 octave used); whether the conga / rim pitch envelopes add to the oscillator pitch was inferred. | — |
+
+Versions: 2.4.1 in both Cargo.toml, README, manuals, dist/LISEZ-MOI.
+
+---
+
+# Ritmo-6 v2.4.0 (2026-11-27) — third sound engine: MP7
+
+| Change | Behaviour | Verified by |
+|---|---|---|
+| MP7 engine (`src/mp7.rs`) | Written from scratch, in the spirit of the Mini Pops 7 instruments. 15 instruments built from: a bridged-T style resonator (damped sine excited by a unit-area half-sine trigger pulse of ATTACK length, pitch bent up a little on strong hits), transistor noise through a TPT band filter with its own envelope, a second resonator (FREQ 2), a 1.5 ms tick, a transistor stage (tanh, DRIVE), two-pole HIGHPASS and a DARK low-pass. Guiro (scrape that swells and fades over LENGTH), Tambourine (1-6 shakes) and Quijada (a strong hit then a rattle of clicks at RATE dying over LENGTH, each tooth ringing for RING; DENSITY loosens the timing and adds a second click per period) use a pulse train. Each hit varies slightly (pitch ±0.2 %, level ±3 %). Presets are estimates by ear (retuned in 2.4.1). | tests `every_instrument_sounds_and_stays_in_range`, `bass_drum_rings_at_its_frequency` (50-80 Hz), `quijada_rattles` (≥ 8 bursts, last quarter < 20 % of the first), `guiro_scrapes_for_its_length`, `presets_fit_the_knobs`; WAV renders (`mp7_wavs`, ignored test) peaks 0.46-0.85. **Not yet heard by the person.** |
+| SOUND switch | Three positions MINI · ORIG · MP7 (click a position). Choosing MP7 gives each voice the preset of its MP7 instrument (the knobs mean other things on MP7); the mixer and patterns are kept. Leaving MP7 keeps the knobs, as MINI ↔ ORIG always did. | test `switching_to_mp7_gives_each_voice_its_instrument_sound`; screenshot |
+| Parameters | New, after everything else: `mp7` (switch, MP7 on = it takes the place of MINI / ORIG; the old `sound` switch is unchanged) and `mp7i_a..f` (each voice's instrument 0-14, stepped). Existing ids, VST3 class id and CLAP id unchanged; internal parameter numbers of 2.3 unchanged (MP7 after ACCENT). | tests `every_parameter_has_its_own_slot` |
+| Module panel on MP7 | Title "MODULE - x0n · MP7"; instrument display with ◀ ▶ (choosing loads its sound; clicking the display brings the instrument's own sound back); knobs labelled with their MP7 meaning and hover text in Hz / ms / %; knobs an instrument doesn't use are dimmed; LP/HP becomes NORM / DARK; RAND moves the used knobs a little around the instrument's preset. The strips' TUNE label reads FREQ. | screenshot (module F, Quijada) |
+| MP7 kit | KIT selector after KIT 16: A bass drum, B snare 1, C conga, D claves, E hihat, F quijada (the MINI kit's roles, so the demo rhythms fit), MINI mixer and tempo. | tests `mp7_kit_matches_the_instrument_presets`, `mp7_kit_turns_the_mp7_engine_on_and_other_kits_turn_it_off`, `mp7_sound_plays_through_the_engine` |
+| Files | Banks save `mp7` and `x_mp7_instrument`; module files save `mp7_instrument`. Banks and modules from 2.3 and older open with MP7 off and sound as before; 2.3 ignores the new keys. | test `banks_from_2_3_open_without_mp7` |
+| Standalone | `--kit <0..17 or mp7>` loads a kit at start (for pictures). | screenshots |
+
+Versions: 2.4.0 in both Cargo.toml (the panel shows it), README, manuals, dist/LISEZ-MOI.
+Manuals: panel.png retaken from the v2.4.0 app (three-way SOUND switch); items 9 (SOUND) and 10 (KIT) describe
+MP7; both PNG manuals re-rendered (legend line height 17.5 → 17 px so item 16 stays above the module section).
+dist/ rebuilt by bundle.ps1 (with ASIO). publish/ (the GitHub copy) not updated yet.
+
+---
+
 # Ritmo-6 v2.3.0 (2026-11-27) — About page: website and update check
 
 | Change | Behaviour | Verified by |
